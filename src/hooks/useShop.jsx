@@ -1,0 +1,1 @@
+//Shopify session & location parameters

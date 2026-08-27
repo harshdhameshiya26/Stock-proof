@@ -1,0 +1,1 @@
+//Variance calculations, baseline snapshot generation, & history logging

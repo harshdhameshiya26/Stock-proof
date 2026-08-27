@@ -1,0 +1,1 @@
+//Global state for active session data & user roles
