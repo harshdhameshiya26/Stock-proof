@@ -6,6 +6,8 @@ import orderRoutes from './orders.js';
 import productRoutes from './products.js';
 import settingsRoutes from './settings.js';
 import webhookRoutes from './webhooks.js';
+import userRoutes from './users.js';
+import billingRoutes from './billing.js';
 
 const router = express.Router();
 
@@ -16,6 +18,8 @@ router.use('/orders', orderRoutes);
 router.use('/products', productRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/webhooks', webhookRoutes);
+router.use('/users', userRoutes);
+router.use('/billing', billingRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {
