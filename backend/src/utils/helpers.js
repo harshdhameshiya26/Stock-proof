@@ -40,28 +40,7 @@ export const deriveLineItemStatus = (variance, actualCount) => {
   return 'discrepancy';
 };
 
-/**
- * Roll up session-level totals from an array of line items.
- * @param {Array} lineItems - Array of AuditLineItem documents
- * @returns {{ totalItemsCounted, totalNetVariance, totalDollarVariance }}
- */
-export const rollUpSessionTotals = (lineItems) => {
-  let totalItemsCounted  = 0;
-  let totalNetVariance   = 0;
-  let totalDollarVariance = 0;
 
-  for (const item of lineItems) {
-    totalItemsCounted   += Number(item.actualCount ?? 0);
-    totalNetVariance    += Number(item.variance   ?? 0);
-    totalDollarVariance += calcDollarImpact(item.variance, item.unitCost);
-  }
-
-  return {
-    totalItemsCounted,
-    totalNetVariance,
-    totalDollarVariance: parseFloat(totalDollarVariance.toFixed(2)),
-  };
-};
 
 /**
  * Check whether a session's variance totals exceed configured threshold rules.

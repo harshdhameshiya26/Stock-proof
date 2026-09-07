@@ -8,6 +8,8 @@
 
 import crypto  from 'crypto';
 import Shop    from '../models/Shop.js';
+import AuditSession from '../models/AuditSession.js';
+import AuditLineItem from '../models/AuditLineItem.js';
 import logger  from '../utils/logger.js';
 import { deactivateShop } from './shopify.js';
 
@@ -101,16 +103,14 @@ export const handleInventoryUpdate = async (req, res) => {
       updatedAt:       payload?.updated_at,
     });
 
-    /**
-     * Optional enhancement: flag active audit sessions at this location
-     * as having a stale baseline so staff can be warned.
-     *
-     *   const locationGid = `gid://shopify/Location/${payload.location_id}`;
-     *   await AuditSession.updateMany(
-     *     { locationId: locationGid, shopId: shopDomain, status: { $in: ['IN_PROGRESS', 'PAUSED'] } },
-     *     { $set: { baselineStale: true } }
-     *   );
-     */
+    if (payload?.location_id) {
+      const locationGid = `gid://shopify/Location/${payload.location_id}`;
+      await AuditSession.updateMany(
+        { locationId: locationGid, shopId: shopDomain, status: { $in: ['IN_PROGRESS', 'PAUSED'] } },
+        { $set: { baselineStale: true } }
+      );
+      logger.info(`[Webhook] Flagged active audits at ${locationGid} as baselineStale for shop=${shopDomain}`);
+    }
 
     return res.status(200).json({ received: true });
   } catch (err) {
@@ -137,11 +137,12 @@ export const handleProductUpdate = async (req, res) => {
       updatedAt: payload?.updated_at,
     });
 
-    /**
-     * Optional enhancement: find active audit sessions containing
-     * variants of this product and mark line items as having stale
-     * display data (title/sku/barcode may have changed).
-     */
+    if (payload?.id) {
+      const productGid = `gid://shopify/Product/${payload.id}`;
+      // If we want to refresh line items, we would do it here. 
+      // For now, logging is sufficient as baselineStale is the critical feature.
+      logger.info(`[Webhook] Product ${productGid} updated. Front-end could prompt refresh.`);
+    }
 
     return res.status(200).json({ received: true });
   } catch (err) {
@@ -178,7 +179,7 @@ export const handleAppUninstalled = async (req, res) => {
 };
 
 /**
- * Handle app/subscriptions/update
+ * Handle app_subscriptions/update
  *
  * Shopify fires this when a merchant cancels or changes their subscription
  * from the Shopify Admin, outside of our app.

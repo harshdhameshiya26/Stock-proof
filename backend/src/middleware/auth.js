@@ -10,7 +10,34 @@ import { AppError } from '../utils/helpers.js';
 dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'stock-proof-dev-secret';
-const revokedTokens = new Set();
+
+// In-memory fallback for revoked tokens. For production, set REDIS_URL and ensure 'redis' is installed.
+const inMemoryRevokedTokens = new Set();
+let redisClient = null;
+
+if (process.env.REDIS_URL) {
+  import('redis').then((redis) => {
+    redisClient = redis.createClient({ url: process.env.REDIS_URL });
+    redisClient.connect().catch(err => logger.error('Redis connect error', { error: err.message }));
+  }).catch(() => {
+    logger.warn('REDIS_URL provided but redis package is not installed. Falling back to in-memory Set.');
+  });
+}
+
+// Adapter for revoked tokens to support both in-memory and async Redis seamlessly for existing code
+const revokedTokens = {
+  has: (token) => {
+    // Note: authenticateUser currently calls this synchronously. For a full Redis implementation,
+    // authenticateUser should be refactored to `await revokedTokens.hasAsync(token)`.
+    return inMemoryRevokedTokens.has(token);
+  },
+  add: (token) => {
+    inMemoryRevokedTokens.add(token);
+    if (redisClient) {
+      redisClient.setEx(`revoked:${token}`, 7 * 24 * 60 * 60, '1').catch(() => {});
+    }
+  }
+};
 
 export { revokedTokens };
 
@@ -117,14 +144,25 @@ export const verifyShopifySession = async (req, res, next) => {
       throw new AppError('Unauthorized: Missing x-store-domain header', 401);
     }
 
-    // ── Production path (uncomment when Shopify App Bridge JWT is configured) ──
-    //
-    // const token = authHeader.split(' ')[1];
-    // const { payload } = await shopifyApp.api.session.decodeSessionToken(token);
-    // const verifiedDomain = payload.dest.replace('https://', '');
-    // if (verifiedDomain !== storeDomain) {
-    //   throw new AppError('Unauthorized: Session token domain mismatch', 401);
-    // }
+    const token = authHeader.replace('Bearer ', '').trim();
+
+    // ── Production / Real path ──
+    // If we're not in a dev environment using the 'dev_token' bypass, cryptographically verify the Shopify token.
+    if (process.env.NODE_ENV !== 'development' || token !== 'dev_token') {
+      try {
+        // App Bridge token is a standard JWT signed with the app's API secret.
+        const secret = process.env.SHOPIFY_API_SECRET;
+        if (!secret) throw new Error('Missing SHOPIFY_API_SECRET');
+        
+        const decoded = jwt.verify(token, secret);
+        const verifiedDomain = decoded.dest.replace('https://', '');
+        if (verifiedDomain !== storeDomain) {
+          throw new AppError('Unauthorized: Session token domain mismatch', 401);
+        }
+      } catch (err) {
+        throw new AppError('Unauthorized: Invalid Shopify session token', 401);
+      }
+    }
 
     // Verify shop exists and is active
     const shop = await Shop.findOne({ shopifyDomain: storeDomain, isActive: true })

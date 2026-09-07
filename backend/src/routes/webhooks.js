@@ -34,7 +34,7 @@ router.post('/product-update', handleProductUpdate);
 // POST /api/webhooks/app-uninstalled — app/uninstalled
 router.post('/app-uninstalled', handleAppUninstalled);
 
-// POST /api/webhooks/app-subscriptions-update — app/subscriptions/update
+// POST /api/webhooks/app-subscriptions-update — app_subscriptions/update
 router.post('/app-subscriptions-update', handleAppSubscriptionsUpdate);
 
 export default router;

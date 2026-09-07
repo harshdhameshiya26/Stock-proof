@@ -507,7 +507,6 @@ export const pushInventoryAdjustments = async (shopId, locationId, lineItems, se
         name:       'available',
         reason,
         quantities,
-        setQuantities: quantities,
       },
     };
 
@@ -601,38 +600,55 @@ export const getProductById = async (shopId, productId) => {
 
 /**
  * List products with pagination — used by product browsing controller.
+ *
+ * Shopify GraphQL product query supports these filter fields:
+ *   title, vendor, product_type, status, tag, gift_card, published_status
+ * NOTE: `sku` is a VARIANT-level field and cannot be used here.
+ *
  * @param {string}  shopId
- * @param {Object}  options  — { cursor, search }
+ * @param {Object}  options  — { cursor, search, vendor, status, limit }
  */
-export const listProducts = async (shopId, { cursor = null, search = null } = {}) => {
-  const shop  = await getShop(shopId);
-  const queryString = search ? `title:*${search}* OR sku:*${search}*` : null;
+export const listProducts = async (shopId, { cursor = null, search = null, vendor = null, status = null, limit = null } = {}) => {
+  const shop      = await getShop(shopId);
+  const pageSize  = Math.min(250, Math.max(1, parseInt(limit ?? GRAPHQL_PAGE_SIZE, 10)));
+
+  // Build Shopify filter query string
+  // Only title is supported for partial search at product level
+  const filters = [];
+  if (search)  filters.push(`title:*${search}*`);
+  if (vendor)  filters.push(`vendor:${vendor}`);
+  if (status)  filters.push(`status:${status.toUpperCase()}`);
+  const queryString = filters.length > 0 ? filters.join(' AND ') : null;
+
   const gqlQuery = `
     query ListProducts($cursor: String, $query: String) {
-      products(first: ${GRAPHQL_PAGE_SIZE}, after: $cursor, query: $query) {
-        pageInfo { hasNextPage endCursor }
+      products(first: ${pageSize}, after: $cursor, query: $query) {
+        pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
         edges {
           node {
             id title handle vendor status
-            images(first: 1) { edges { node { url } } }
-            variants(first: 1) { edges { node { id sku } } }
+            images(first: 1) { edges { node { url altText } } }
+            variants(first: 1) { edges { node { id sku barcode } } }
             totalVariants
           }
         }
       }
     }
   `;
-  const data    = await shopifyGraphQL(shop.shopifyDomain, shop.accessToken, gqlQuery, { cursor, query: queryString });
-  const conn    = data?.products;
+
+  const data     = await shopifyGraphQL(shop.shopifyDomain, shop.accessToken, gqlQuery, { cursor, query: queryString });
+  const conn     = data?.products;
   const products = (conn?.edges ?? []).map(({ node }) => ({
-    id:            node.id,
-    title:         node.title,
-    handle:        node.handle,
-    vendor:        node.vendor,
-    status:        node.status,
-    imageUrl:      node.images?.edges?.[0]?.node?.url ?? null,
-    totalVariants: node.totalVariants,
-    firstVariantSku: node.variants?.edges?.[0]?.node?.sku ?? null,
+    id:              node.id,
+    title:           node.title,
+    handle:          node.handle,
+    vendor:          node.vendor,
+    status:          node.status,
+    imageUrl:        node.images?.edges?.[0]?.node?.url    ?? null,
+    imageAlt:        node.images?.edges?.[0]?.node?.altText ?? null,
+    totalVariants:   node.totalVariants,
+    firstVariantSku: node.variants?.edges?.[0]?.node?.sku     ?? null,
+    firstVariantBarcode: node.variants?.edges?.[0]?.node?.barcode ?? null,
   }));
 
   return {

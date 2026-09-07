@@ -16,15 +16,14 @@ import User           from '../models/User.js';
 import { sendOtpEmail } from './userController.js';
 import { randomInt } from 'node:crypto';
 import {
-  getLiveStockSnapshot,
   pushInventoryAdjustments,
 } from '../services/shopify.js';
 import {
   AppError,
-  rollUpSessionTotals,
   parsePagination,
   paginatedResponse,
 } from '../utils/helpers.js';
+import { rollUpSessionTotals, getLiveStockSnapshot } from '../services/auditService.js';
 import logger from '../utils/logger.js';
 
 // ── Internal Helpers ──────────────────────────────────────────────────────────
@@ -692,7 +691,7 @@ export const approveAudit = async (req, res, next) => {
     await writeLog(id, 'SHOPIFY_SYNC', actor, { newValue: syncResult, shopifySyncResult: syncResult });
     await writeLog(id, 'SESSION_COMPLETED', actor);
 
-    logger.info(`[Audit] Session ${id} approved by manager ${managerId} → COMPLETED`);
+    logger.info(`[Audit] Session ${id} approved by manager ${actor._id} → COMPLETED`);
 
     return res.status(200).json({
       status:  'COMPLETED',

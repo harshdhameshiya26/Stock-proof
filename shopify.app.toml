@@ -53,4 +53,4 @@ automatically_update_urls_on_dev = true
 
   [[webhooks.subscriptions]]
   uri = "/api/webhooks/app-subscriptions-update"
-  topics = [ "app/subscriptions/update" ]
+  topics = [ "app_subscriptions/update" ]

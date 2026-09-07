@@ -79,6 +79,10 @@ const auditSessionSchema = new mongoose.Schema(
       enum: AUDIT_STATUSES,
       default: 'IN_PROGRESS',
     },
+    baselineStale: {
+      type: Boolean,
+      default: false,
+    },
 
     // ── Timestamps ────────────────────────────────────────────────────────────
     startedAt: {
