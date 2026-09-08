@@ -14,7 +14,8 @@ datasource db {
 }
 
 model tbl_Session {
-  id            String    @id @map("_id")
+  pk            String    @id @default(uuid()) @map("_id")
+  id            String    @unique
   shop          String
   state         String
   isOnline      Boolean   @default(false)

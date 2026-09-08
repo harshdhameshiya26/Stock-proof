@@ -239,6 +239,7 @@ export const getAuditSession = async (req, res, next) => {
     const session = await AuditSession
       .findById(id)
       .populate('staffId',      'name email role')
+      .populate('submittedById', 'name email role')
       .populate('approvedById', 'name email role')
       .lean();
 
@@ -294,6 +295,7 @@ export const getAuditHistory = async (req, res, next) => {
     const [sessions, total] = await Promise.all([
       AuditSession.find(filter)
         .populate('staffId',      'name email role')
+        .populate('submittedById', 'name email role')
         .populate('approvedById', 'name email role')
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -301,6 +303,32 @@ export const getAuditHistory = async (req, res, next) => {
         .lean(),
       AuditSession.countDocuments(filter),
     ]);
+
+    // Older sessions may not have submittedById yet. Recover the actual
+    // submitter from the immutable submission event instead of using the approver.
+    const sessionIds = sessions.map((session) => session._id);
+    if (sessionIds.length) {
+      const submissionLogs = await AuditLog.find({
+        sessionId: { $in: sessionIds },
+        action: 'SESSION_SUBMITTED',
+      })
+        .sort({ createdAt: 1 })
+        .populate('actorId', 'name email role')
+        .lean();
+
+      const submitterBySession = submissionLogs.reduce((map, log) => {
+        if (!map[log.sessionId.toString()]) {
+          map[log.sessionId.toString()] = log.actorId || log.actorSnapshot;
+        }
+        return map;
+      }, {});
+
+      sessions.forEach((session) => {
+        if (!session.submittedById) {
+          session.submittedById = submitterBySession[session._id.toString()] || null;
+        }
+      });
+    }
 
     return res.status(200).json(paginatedResponse(sessions, total, page, limit));
   } catch (err) {
@@ -463,6 +491,7 @@ export const submitAudit = async (req, res, next) => {
     session.totalNetVariance   = totals.totalNetVariance;
     session.totalDollarVariance = totals.totalDollarVariance;
     session.submittedAt        = new Date();
+    session.submittedById      = actor?._id ?? session.staffId;
 
     // Load settings (use defaults if none configured)
     const settings = await Settings.findOne({ shopId: session.shopId });

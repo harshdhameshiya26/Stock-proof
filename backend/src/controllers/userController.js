@@ -384,9 +384,33 @@ export const createUser = async (req, res, next) => {
     }
 
     const normalizedEmail = (email || '').toLowerCase().trim();
-    const existing = await User.findOne({ email: normalizedEmail, ...(shopObjectId ? { shopId: shopObjectId } : {}) });
+    const existing = await User.findOne({ email: normalizedEmail }).select('_id name email role shopId').lean();
     if (existing) {
-      throw new AppError(`A user with email '${normalizedEmail}' already exists in this store`, 409);
+      if (existing.shopId?.toString() === shopObjectId?.toString()) {
+        throw new AppError(`A user with email '${normalizedEmail}' is already a member of this store`, 409);
+      }
+
+      if (!existing.shopId && shopObjectId) {
+        const linkedUser = await User.findByIdAndUpdate(
+          existing._id,
+          {
+            $set: {
+              shopId: shopObjectId,
+              name: (name || existing.name).trim(),
+              role: role || existing.role || 'STAFF',
+            },
+          },
+          { new: true, runValidators: true }
+        );
+
+        return res.status(200).json({
+          message: 'Existing user added to this store successfully',
+          userId: linkedUser._id,
+          user: sanitizeUser(linkedUser),
+        });
+      }
+
+      throw new AppError(`A user with email '${normalizedEmail}' belongs to another store`, 409);
     }
 
     const hashedPassword = password ? await bcrypt.hash(password, 12) : undefined;
@@ -417,14 +441,14 @@ export const createUser = async (req, res, next) => {
 export const getUsers = async (req, res, next) => {
   try {
     const { shopId } = req.query;
-    const filter = {};
+    const filter = req.shop?._id ? { shopId: req.shop._id } : {};
 
     if (shopId) {
       if (mongoose.isValidObjectId(shopId)) {
         filter.shopId = shopId;
       } else {
         const shop = await Shop.findOne({ shopifyDomain: shopId }).select('_id').lean();
-        if (shop) filter.shopId = shop._id;
+        filter.shopId = shop?._id || null;
       }
     }
 

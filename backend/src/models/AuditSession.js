@@ -64,6 +64,12 @@ const auditSessionSchema = new mongoose.Schema(
       ref: 'User',
       required: [true, 'staffId is required'],
     },
+    /** Staff member who submitted the completed count for review. */
+    submittedById: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
     approvedById: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

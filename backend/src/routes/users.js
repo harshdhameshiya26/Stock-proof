@@ -40,7 +40,7 @@ router.delete('/me', authenticateUserForDeletion, deleteCurrentUser);
 
 // Existing store-scoped staff management endpoints
 router.get('/', verifyShopifySession, requireManager, getUsers);
-router.post('/', verifyShopifySession, validateUserCreate, createUser);
+router.post('/', verifyShopifySession, requireManager, validateUserCreate, createUser);
 router.get('/:id', verifyShopifySession, requireManager, getUser);
 router.patch('/:id', verifyShopifySession, requireManager, updateUser);
 router.post('/:id/logout', verifyShopifySession, requireManager, logoutUser);

@@ -3,6 +3,7 @@ import {
   ApiVersion,
   AppDistribution,
   BillingInterval,
+  BillingReplacementBehavior,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
@@ -18,10 +19,17 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
+  sessionStorage: new PrismaSessionStorage(prisma, { tableName: 'tbl_Session' }),
   distribution: AppDistribution.AppStore,
+  webhooks: {
+    APP_SUBSCRIPTIONS_UPDATE: {
+      deliveryMethod: "http",
+      callbackUrl: "/webhooks",
+    },
+  },
   billing: {
     [STARTER_PLAN]: {
+      replacementBehavior: BillingReplacementBehavior.Prorate,
       lineItems: [
         {
           amount: 29,
@@ -31,6 +39,7 @@ const shopify = shopifyApp({
       ],
     },
     [PRO_PLAN]: {
+      replacementBehavior: BillingReplacementBehavior.Prorate,
       lineItems: [
         {
           amount: 79,

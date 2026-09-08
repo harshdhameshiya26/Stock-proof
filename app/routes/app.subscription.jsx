@@ -1,123 +1,95 @@
-const plans = [
-  {
-    name: "Free",
-    price: "$0",
-    description: "For basic inventory checks and small teams.",
-    badge: "Current",
-    featured: false,
-    features: [
-      "Up to 3 active audits",
-      "Basic discrepancy alerts",
-      "Email support",
-      "1 workspace",
-    ],
-  },
-  {
-    name: "Starter",
-    price: "$29",
-    description: "For growing stores that need more visibility.",
-    badge: "Most popular",
-    featured: true,
-    features: [
-      "Unlimited audits",
-      "Priority discrepancy tracking",
-      "Advanced approval workflows",
-      "Unlimited workspaces",
-    ],
-  },
-  {
-    name: "Pro",
-    price: "$79",
-    description: "For operations teams managing multiple stores.",
-    badge: "Scale",
-    featured: false,
-    features: [
-      "Everything in Starter",
-      "Multi-store reporting",
-      "Custom audit schedules",
-      "Dedicated onboarding support",
-    ],
-  },
-];
+// Note: no redirect import needed — billing redirect is handled client-side via window.top
+import { authenticate, STARTER_PLAN, PRO_PLAN } from "../shopify.server";
+import { boundary } from "@shopify/shopify-app-react-router/server";
+import SubscriptionPage from "../../src/pages/subscription.jsx";
 
-export default function SubscriptionPage() {
-  return (
-    <div style={{ padding: "32px 24px", fontFamily: "sans-serif" }}>
-      <div style={{ maxWidth: "1200px", margin: "0 auto" }}>
-        <div style={{ marginBottom: "32px" }}>
-          <p style={{ textTransform: "uppercase", letterSpacing: "0.08em", color: "#5c6b7a", margin: 0 }}>
-            Pricing
-          </p>
-          <h1 style={{ margin: "8px 0 12px", fontSize: "2.25rem" }}>Choose the plan that fits your workflow</h1>
-          <p style={{ margin: 0, color: "#4d5967", maxWidth: "720px" }}>
-            Start free, upgrade when you need richer audits, approvals, and reporting for your Shopify operations.
-          </p>
-        </div>
+/* ── Loader: check current billing status ──────────────────── */
+export const loader = async ({ request }) => {
+  const { billing, session } = await authenticate.admin(request);
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "20px" }}>
-          {plans.map((plan) => (
-            <div
-              key={plan.name}
-              style={{
-                border: plan.featured ? "2px solid #2e6cff" : "1px solid #dfe3e8",
-                borderRadius: "18px",
-                background: plan.featured ? "#f4f7ff" : "#fff",
-                boxShadow: plan.featured ? "0 10px 25px rgba(46,108,255,0.12)" : "0 4px 12px rgba(15,23,42,0.04)",
-                padding: "24px",
-                position: "relative",
-              }}
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  top: "12px",
-                  right: "12px",
-                  background: plan.featured ? "#2e6cff" : "#eef2f7",
-                  color: plan.featured ? "#fff" : "#374151",
-                  borderRadius: "999px",
-                  padding: "6px 10px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                }}
-              >
-                {plan.badge}
-              </div>
+  // Check which plan (if any) is active
+  const billingCheck = await billing.check({
+    plans: [STARTER_PLAN, PRO_PLAN],
+    isTest: true,          // set false in production
+  });
 
-              <p style={{ margin: "0 0 12px", color: "#4b5563", fontWeight: 700 }}>{plan.name}</p>
-              <div style={{ marginBottom: "12px", display: "flex", alignItems: "baseline", gap: "6px" }}>
-                <span style={{ fontSize: "2rem", fontWeight: 800 }}>{plan.price}</span>
-                <span style={{ color: "#6b7280" }}>{plan.name === "Free" ? "/ forever" : "/ month"}</span>
-              </div>
-              <p style={{ margin: "0 0 18px", color: "#4d5967", minHeight: "48px" }}>{plan.description}</p>
+  const activePlan = billingCheck.hasActivePayment
+    ? billingCheck.appSubscriptions?.[0]?.name ?? null
+    : null;
 
-              <ul style={{ listStyle: "none", padding: 0, margin: "0 0 20px", display: "grid", gap: "10px" }}>
-                {plan.features.map((feature) => (
-                  <li key={feature} style={{ display: "flex", alignItems: "center", gap: "10px", color: "#1f2937" }}>
-                    <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e" }} />
-                    {feature}
-                  </li>
-                ))}
-              </ul>
+  // If ?billing_approved=true is in the URL (Shopify redirected back after approval),
+  // re-check is already done above — just strip the param and show updated state.
+  return { activePlan, shop: session.shop };
+};
 
-              <button
-                type="button"
-                style={{
-                  width: "100%",
-                  border: "none",
-                  borderRadius: "10px",
-                  background: plan.featured ? "#2e6cff" : "#111827",
-                  color: "#fff",
-                  padding: "12px 16px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                {plan.name === "Free" ? "Get started" : `Choose ${plan.name}`}
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
+/* ── Action: create a billing charge & redirect ────────────── */
+export const action = async ({ request }) => {
+  const { billing, session } = await authenticate.admin(request);
+
+  const formData = await request.formData();
+  const intent   = formData.get("intent");   // "subscribe" | "cancel"
+  const planId   = formData.get("planId");   // "starter" | "pro"
+
+  // Handle Cancellation
+  if (intent === "cancel") {
+    try {
+      const billingCheck = await billing.check({
+        plans: [STARTER_PLAN, PRO_PLAN],
+        isTest: true,
+      });
+
+      if (billingCheck.hasActivePayment) {
+        const subscription = billingCheck.appSubscriptions[0];
+        await billing.cancel({
+          subscriptionId: subscription.id,
+          isTest: true,
+          prorate: true,
+        });
+      }
+      return { success: true, message: "Subscription cancelled successfully." };
+    } catch (error) {
+      console.error("Cancellation error:", error);
+      return { error: "Failed to cancel subscription.", errorData: error.message };
+    }
+  }
+
+  // Handle Subscription / Upgrade / Downgrade
+  const planName = planId === PRO_PLAN ? PRO_PLAN : STARTER_PLAN;
+
+  let confirmationUrl;
+  try {
+    // billing.request() returns the confirmationUrl STRING directly (not an object)
+    // returnUrl tells Shopify where to send the merchant after they approve/decline
+    confirmationUrl = await billing.request({
+      plan: planName,
+      isTest: true,          // set false in production
+      returnUrl: `${process.env.SHOPIFY_APP_URL}/app/subscription?billing_approved=true`,
+    });
+  } catch (error) {
+    console.error("Shopify Billing Error:", error?.message);
+    console.error("Billing userErrors:", JSON.stringify(error?.errorData ?? [], null, 2));
+    return {
+      error: error.message,
+      errorData: error.errorData ?? null,
+    };
+  }
+
+  if (!confirmationUrl) {
+    return { error: "Shopify did not return a billing URL. Check your plan configuration." };
+  }
+
+  // Return the URL as JSON — the client will navigate via window.top.location.href
+  // because this app runs inside a Shopify iframe and server-side redirect() only
+  // navigates the iframe, not the top-level window where Shopify billing must open.
+  return { confirmationUrl };
+};
+
+/* ── Default export ─────────────────────────────────────────── */
+export default function Subscription() {
+  return <SubscriptionPage />;
 }
+
+export const headers = (headersArgs) => {
+  return boundary.headers(headersArgs);
+};
+

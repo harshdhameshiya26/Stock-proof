@@ -45,7 +45,7 @@ api_version = "2026-10"
   topics = [ "app/scopes_update" ]
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://tile-geology-rely-parties.trycloudflare.com/api/auth" ]
 
 [build]
 include_config_on_deploy = true

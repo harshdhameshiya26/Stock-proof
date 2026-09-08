@@ -31,7 +31,7 @@ const shopifyAdminUrl = (shopDomain, apiVersion = '2024-10') =>
  * In development/test environments, pass test:true to Shopify so charges
  * can be approved without real billing. Auto-disabled in production.
  */
-const isTestMode = () => process.env.NODE_ENV !== 'development';
+const isTestMode = () => process.env.BILLING_TEST_MODE !== 'false';
 
 /**
  * Returns the app's public base URL used to build the redirect/callback URL.
