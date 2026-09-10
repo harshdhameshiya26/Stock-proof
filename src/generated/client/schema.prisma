@@ -1,0 +1,127 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "mongodb"
+  url      = env("MONGODB_URI")
+}
+
+model tbl_Session {
+  pk                  String    @id @default(uuid()) @map("_id")
+  id                  String    @unique
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model tbl_Shop {
+  id            String   @id @default(uuid()) @map("_id")
+  shopifyDomain String   @unique
+  accessToken   String
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model tbl_User {
+  id        String   @id @default(uuid()) @map("_id")
+  shopId    String
+  email     String   @unique
+  name      String
+  role      String   @default("STAFF")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model tbl_Settings {
+  id          String   @id @default(uuid()) @map("_id")
+  shopId      String   @unique
+  dollarLimit Float    @default(100.0)
+  itemLimit   Int      @default(10)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model tbl_AuditSession {
+  id           String   @id @default(uuid()) @map("_id")
+  shopId       String
+  locationId   String
+  staffId      String
+  approvedById String?
+  status       String   @default("IN_PROGRESS")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model tbl_AuditLineItem {
+  id             String   @id @default(uuid()) @map("_id")
+  auditSessionId String
+  productId      String
+  variantId      String
+  barcode        String
+  title          String
+  unitCost       Float    @default(0.0)
+  expectedCount  Int      @default(0)
+  actualCount    Int      @default(0)
+  variance       Int      @default(0)
+  reasonTag      String?
+  note           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model tbl_DiscrepancyReason {
+  id          String  @id @default(uuid()) @map("_id")
+  code        String  @unique
+  label       String
+  description String?
+}
+
+model tbl_AuditLog {
+  id                  String   @id @default(uuid()) @map("_id")
+  shopId              String
+  auditSessionId      String
+  totalItemsScanned   Int
+  totalNetVariance    Int
+  totalDollarVariance Float
+  syncedToShopify     Boolean  @default(false)
+  completedAt         DateTime @default(now())
+}
+
+model tbl_Subscription {
+  id                    String    @id @default(uuid()) @map("_id")
+  shopId                String    @unique
+  plan                  String    @default("STARTER")
+  status                String    @default("ACTIVE")
+  shopifySubscriptionId String?   @unique
+  price                 Float
+  currency              String    @default("USD")
+  billingInterval       String    @default("MONTHLY")
+  trialEndsAt           DateTime?
+  billingCycleEndDate   DateTime?
+  cancelledAt           DateTime?
+  cancellationReason    String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}

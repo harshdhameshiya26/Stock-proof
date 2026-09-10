@@ -9,8 +9,9 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 
-export const STARTER_PLAN = "starter";
-export const PRO_PLAN = "pro";
+export const STARTER_PLAN    = "starter";
+export const PRO_PLAN        = "pro";
+export const ENTERPRISE_PLAN = "enterprise";
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -43,6 +44,16 @@ const shopify = shopifyApp({
       lineItems: [
         {
           amount: 79,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days,
+        },
+      ],
+    },
+    [ENTERPRISE_PLAN]: {
+      replacementBehavior: BillingReplacementBehavior.Prorate,
+      lineItems: [
+        {
+          amount: 60,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
         },

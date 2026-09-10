@@ -210,7 +210,7 @@ export const getLocations = async (req, res, next) => {
 export const getProducts = async (req, res, next) => {
   try {
     const shop = await resolveShop(req);
-    const { cursor, search, vendor, status } = req.query;
+    const { cursor, search, vendor, status = 'ACTIVE' } = req.query;
 
     // ── Dev mode: return filtered mock products ───────────────────────────────
     if (isDevMode(shop)) {
@@ -229,6 +229,7 @@ export const getProducts = async (req, res, next) => {
       if (vendor) {
         results = results.filter((p) => p.vendor.toLowerCase() === vendor.toLowerCase());
       }
+      results = results.filter((p) => p.status === 'ACTIVE');
 
       return res.status(200).json({
         count: results.length,

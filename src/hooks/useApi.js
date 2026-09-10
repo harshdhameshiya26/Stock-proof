@@ -2,9 +2,11 @@ import { useCallback, useMemo, useState } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { useOutletContext } from "react-router";
 import { createApiClient } from "../services/apiClient";
+import { useAuthenticatedFetch } from "./useAuthenticatedFetch";
 
 export function useApi() {
 	const appBridge = useAppBridge();
+	const authenticatedFetch = useAuthenticatedFetch();
 	const routeContext = useOutletContext();
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState(null);
@@ -21,8 +23,8 @@ export function useApi() {
 	const staffId = routeContext?.staffId || urlShopDomain?.staffId || "";
 
 	const api = useMemo(
-		() => createApiClient(appBridge, shopDomain, staffId),
-		[appBridge, shopDomain, staffId],
+		() => createApiClient(appBridge, shopDomain, staffId, authenticatedFetch),
+		[appBridge, shopDomain, staffId, authenticatedFetch],
 	);
 
 	const request = useCallback(

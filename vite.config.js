@@ -39,6 +39,12 @@ if (host === "localhost") {
 export default defineConfig({
   server: {
     allowedHosts: [host],
+    proxy: {
+      "/api": {
+        target: process.env.BACKEND_URL || "http://localhost:4000",
+        changeOrigin: true,
+      },
+    },
     cors: {
       preflightContinue: true,
     },

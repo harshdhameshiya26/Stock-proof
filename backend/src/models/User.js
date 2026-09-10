@@ -26,6 +26,11 @@ const userSchema = new mongoose.Schema(
       required: false,
       select: false,
     },
+    status: {
+      type: String,
+      enum: ['INVITED', 'ACTIVE', 'SUSPENDED'],
+      default: 'ACTIVE',
+    },
     jwtToken: {
       type: String,
       default: null,
@@ -37,6 +42,60 @@ const userSchema = new mongoose.Schema(
       select: false,
     },
     otpExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    activationOtp: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    activationOtpExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    loginOtp: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    loginOtpExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    deleteOtp: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    deleteOtpExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    passwordResetOtp: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    passwordResetOtpExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    roleChangeOtp: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    roleChangeOtpExpiresAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    activatedAt: {
       type: Date,
       default: null,
     },

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Page,
-  Layout,
+  Grid,
   Card,
   Text,
   BlockStack,
@@ -11,17 +11,18 @@ import {
   DataTable,
   Filters,
   EmptyState,
-  Modal,
   TextField,
   Tabs,
   Banner,
   Avatar,
   Spinner,
   Box,
+  Icon,
 } from "@shopify/polaris";
 import { useApi } from "../hooks/useApi";
 import ManagerSignoff from "../components/approvals/ManagerSignoff";
-import { RefreshIcon } from "@shopify/polaris-icons";
+import { AlertTriangleIcon, CheckCircleIcon, RefreshIcon, ListBulletedIcon } from "@shopify/polaris-icons";
+import AppDrawer from "../components/common/AppDrawer";
 
 const statusTone = {
   pending: "warning",
@@ -199,39 +200,40 @@ export default function Approvals() {
         )}
 
         {/* Summary Cards */}
-        <Layout>
-          <Layout.Section variant="oneThird">
-            <Card>
-              <BlockStack gap="200">
+        <Grid>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}>
+            <Card padding="500">
+              <InlineStack align="space-between" blockAlign="start" wrap={false}><BlockStack gap="200">
                 <Text as="p" variant="bodySm" tone="subdued">Pending</Text>
                 <Text as="p" variant="headingXl" fontWeight="bold">{pendingCount}</Text>
                 <Badge tone="warning">Needs Review</Badge>
-              </BlockStack>
+              </BlockStack><Box background="bg-surface-warning" padding="300" borderRadius="200"><Icon source={AlertTriangleIcon} tone="warning" /></Box></InlineStack>
             </Card>
-          </Layout.Section>
-          <Layout.Section variant="oneThird">
-            <Card>
-              <BlockStack gap="200">
+          </Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}>
+            <Card padding="500">
+              <InlineStack align="space-between" blockAlign="start" wrap={false}><BlockStack gap="200">
                 <Text as="p" variant="bodySm" tone="subdued">Approved</Text>
                 <Text as="p" variant="headingXl" fontWeight="bold">
                   {approvalsData.filter((a) => a.approvalStatus === "approved").length}
                 </Text>
                 <Badge tone="success">Completed</Badge>
-              </BlockStack>
+              </BlockStack><Box background="bg-surface-success" padding="300" borderRadius="200"><Icon source={CheckCircleIcon} tone="success" /></Box></InlineStack>
             </Card>
-          </Layout.Section>
-          <Layout.Section variant="oneThird">
-            <Card>
-              <BlockStack gap="200">
+          </Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}>
+            <Card padding="500">
+              <InlineStack align="space-between" blockAlign="start" wrap={false}><BlockStack gap="200">
                 <Text as="p" variant="bodySm" tone="subdued">Rejected</Text>
                 <Text as="p" variant="headingXl" fontWeight="bold">
                   {approvalsData.filter((a) => a.approvalStatus === "rejected").length}
                 </Text>
                 <Badge tone="critical">Declined</Badge>
-              </BlockStack>
+              </BlockStack><Box background="bg-surface-critical" padding="300" borderRadius="200"><Icon source={AlertTriangleIcon} tone="critical" /></Box></InlineStack>
             </Card>
-          </Layout.Section>
-        </Layout>
+          </Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}><Card padding="500"><InlineStack align="space-between" blockAlign="start" wrap={false}><BlockStack gap="200"><Text as="p" variant="bodySm" tone="subdued" fontWeight="semibold">Total Requests</Text><Text as="p" variant="headingXl" fontWeight="bold">{approvalsData.length}</Text><Text as="p" variant="bodySm" tone="subdued">Awaiting review history</Text></BlockStack><Box background="bg-surface-secondary" padding="300" borderRadius="200"><Icon source={ListBulletedIcon} tone="base" /></Box></InlineStack></Card></Grid.Cell>
+        </Grid>
 
         {/* Approvals Table */}
         <Card>
@@ -278,42 +280,40 @@ export default function Approvals() {
         loading={isProcessing}
       />
 
-      {/* Reject Modal */}
-      <Modal
+      {/* Reject Drawer */}
+      <AppDrawer
         open={rejectModal}
         onClose={() => setRejectModal(false)}
         title="Reject Resolution"
-        primaryAction={{ 
-          content: isProcessing ? "Rejecting..." : "Reject", 
-          tone: "critical", 
+        primaryAction={{
+          content: isProcessing ? "Rejecting..." : "Reject",
+          tone: "critical",
           onAction: handleReject,
-          disabled: isProcessing || !rejectReason 
+          disabled: isProcessing || !rejectReason
         }}
         secondaryActions={[{ content: "Cancel", onAction: () => setRejectModal(false), disabled: isProcessing }]}
       >
-        <Modal.Section>
-          <BlockStack gap="400">
-            {error && (
-              <Banner tone="critical">
-                <p>{error}</p>
-              </Banner>
-            )}
-            <Text as="p" variant="bodyMd">
-              Provide a reason for rejecting the resolution for{" "}
-              <strong>{selectedApproval?.title}</strong>.
-            </Text>
-            <TextField
-              label="Rejection Reason"
-              value={rejectReason}
-              onChange={setRejectReason}
-              multiline={3}
-              placeholder="Explain why this resolution is being rejected..."
-              autoComplete="off"
-              disabled={isProcessing}
-            />
-          </BlockStack>
-        </Modal.Section>
-      </Modal>
+        <BlockStack gap="400">
+          {error && (
+            <Banner tone="critical">
+              <p>{error}</p>
+            </Banner>
+          )}
+          <Text as="p" variant="bodyMd">
+            Provide a reason for rejecting the resolution for{" "}
+            <strong>{selectedApproval?.title}</strong>.
+          </Text>
+          <TextField
+            label="Rejection Reason"
+            value={rejectReason}
+            onChange={setRejectReason}
+            multiline={3}
+            placeholder="Explain why this resolution is being rejected..."
+            autoComplete="off"
+            disabled={isProcessing}
+          />
+        </BlockStack>
+      </AppDrawer>
     </Page>
   );
 }

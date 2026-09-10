@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Page,
   Card,
@@ -7,12 +7,13 @@ import {
   InlineStack,
   Badge,
   Button,
-  ProgressBar,
   Divider,
-  Banner,
   Grid,
   Box,
   Icon,
+  Spinner,
+  Banner,
+  ProgressBar,
 } from "@shopify/polaris";
 import {
   ClipboardIcon,
@@ -20,289 +21,141 @@ import {
   ClockIcon,
   PackageIcon,
   RefreshIcon,
+  ArrowUpIcon,
 } from "@shopify/polaris-icons";
+import { useApi } from "../hooks/useApi";
 
-/* ─── static data ──────────────────────────────────────────── */
-const statsData = [
-  {
-    label: "Active Audits",
-    value: "3",
-    tone: "success",
-    sub: "2 pending approval",
-    badge: "In Progress",
-    icon: ClipboardIcon,
-    iconColor: "#008060",
-    bg: "#f0faf6",
-  },
-  {
-    label: "Discrepancies Found",
-    value: "12",
-    tone: "critical",
-    sub: "5 unresolved",
-    badge: "Unresolved",
-    icon: AlertTriangleIcon,
-    iconColor: "#d72c0d",
-    bg: "#fff4f4",
-  },
-  {
-    label: "Pending Approvals",
-    value: "7",
-    tone: "warning",
-    sub: "Oldest: 3 days ago",
-    badge: "Pending",
-    icon: ClockIcon,
-    iconColor: "#b98900",
-    bg: "#fffbe6",
-  },
-  {
-    label: "Products Scanned",
-    value: "1,482",
-    tone: "info",
-    sub: "Last 30 days",
-    badge: "This Month",
-    icon: PackageIcon,
-    iconColor: "#005bd3",
-    bg: "#f0f5ff",
-  },
-];
+const statusTone = {
+  IN_PROGRESS: "success",
+  PAUSED: "subdued",
+  PENDING_APPROVAL: "warning",
+  COMPLETED: "success",
+  CANCELLED: "critical",
+};
 
-const activeAudits = [
-  { name: "Warehouse A – Full Audit", status: "In Progress", progress: 68, started: "Sep 5, 2026", assignee: "John D." },
-  { name: "Store #12 – Cycle Count", status: "Pending", progress: 0, started: "Sep 7, 2026", assignee: "Sarah M." },
-  { name: "Backroom – Spot Check", status: "In Progress", progress: 42, started: "Sep 6, 2026", assignee: "Raj P." },
-];
+const statusLabel = (status) => String(status || "").replaceAll("_", " ");
 
-const recentActivity = [
-  { item: "SKU-1023 — Blue Hoodie", event: "Discrepancy", statusTone: "critical", status: "Unresolved", date: "Sep 7" },
-  { item: "SKU-0881 — Running Shoes", event: "Approval", statusTone: "success", status: "Approved", date: "Sep 6" },
-  { item: "SKU-2211 — Canvas Tote", event: "Discrepancy", statusTone: "warning", status: "In Review", date: "Sep 6" },
-  { item: "SKU-0034 — Denim Jacket", event: "Count Updated", statusTone: "info", status: "Saved", date: "Sep 5" },
-];
+const formatDate = (value) => {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "-"
+    : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+};
 
-/* ─── helpers ──────────────────────────────────────────────── */
-function auditStatusTone(status) {
-  if (status === "In Progress") return "attention";
-  if (status === "Pending") return "warning";
-  if (status === "Completed") return "success";
-  return "info";
-}
-
-/* ─── stat card ────────────────────────────────────────────── */
-function StatCard({ stat }) {
+function MetricCard({ label, value, detail, tone, icon }) {
   return (
     <Card padding="500">
-      <BlockStack gap="400">
-        <InlineStack align="space-between" blockAlign="start">
-          <Text as="p" variant="bodySm" tone="subdued" fontWeight="semibold">
-            {stat.label}
-          </Text>
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 8,
-              background: stat.bg,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-            }}
-          >
-            <Icon source={stat.icon} tone="base" />
-          </div>
-        </InlineStack>
-
-        <Text as="p" variant="heading2xl" fontWeight="bold">
-          {stat.value}
-        </Text>
-
-        <InlineStack gap="200" blockAlign="center">
-          <Badge tone={stat.tone}>{stat.badge}</Badge>
-          <Text as="span" variant="bodySm" tone="subdued">
-            {stat.sub}
-          </Text>
-        </InlineStack>
-      </BlockStack>
+      <InlineStack align="space-between" blockAlign="start" wrap={false}>
+        <BlockStack gap="150">
+          <Text as="p" variant="bodySm" tone="subdued" fontWeight="semibold">{label}</Text>
+          <Text as="p" variant="headingXl" fontWeight="bold">{value}</Text>
+          <InlineStack gap="150" blockAlign="center" wrap={false}>
+            <Icon source={ArrowUpIcon} tone={tone} />
+            <Text as="span" variant="bodySm" tone="subdued">{detail}</Text>
+          </InlineStack>
+        </BlockStack>
+        <Box background="bg-surface-secondary" padding="300" borderRadius="200"><Icon source={icon} tone={tone} /></Box>
+      </InlineStack>
     </Card>
   );
 }
 
-/* ─── audit row ────────────────────────────────────────────── */
-function AuditRow({ audit }) {
-  return (
-    <Box paddingBlock="400">
-      <BlockStack gap="300">
-        <InlineStack align="space-between" blockAlign="center">
-          <Text as="p" variant="bodyMd" fontWeight="semibold">
-            {audit.name}
-          </Text>
-          <InlineStack gap="200" blockAlign="center">
-            <Badge tone={auditStatusTone(audit.status)}>{audit.status}</Badge>
-            <Text as="p" variant="bodySm" tone="subdued">
-              {audit.assignee}
-            </Text>
-          </InlineStack>
-        </InlineStack>
+function ProgressOverview({ audits }) {
+  const points = audits.length
+    ? audits.slice(0, 7).map((audit) => Math.min(100, Math.max(0, Number(audit.progress || (audit.totalItemsCounted ? 50 : 0)))))
+    : [18, 42, 30, 56, 45, 72, 64];
 
-        <InlineStack align="space-between" blockAlign="center" gap="400">
-          <Box minWidth="55%">
-            <ProgressBar
-              progress={audit.progress}
-              size="small"
-              tone={audit.progress > 50 ? "success" : "primary"}
-            />
-          </Box>
-          <InlineStack gap="300" blockAlign="center">
-            <Text as="p" variant="bodySm" tone="subdued">
-              {audit.progress}% done
-            </Text>
-            <Text as="p" variant="bodySm" tone="subdued">
-              {audit.started}
-            </Text>
-          </InlineStack>
-        </InlineStack>
-      </BlockStack>
-    </Box>
-  );
-}
-
-/* ─── activity row ─────────────────────────────────────────── */
-function ActivityRow({ row }) {
   return (
-    <Box paddingBlock="350">
-      <InlineStack align="space-between" blockAlign="center" wrap={false} gap="300">
-        <BlockStack gap="100">
-          <Text as="p" variant="bodyMd" fontWeight="semibold">
-            {row.item}
-          </Text>
-          <Text as="p" variant="bodySm" tone="subdued">
-            {row.event} · {row.date}
-          </Text>
-        </BlockStack>
-        <div style={{ flexShrink: 0 }}>
-          <Badge tone={row.statusTone}>{row.status}</Badge>
-        </div>
+    <BlockStack gap="300">
+      {points.map((progress, index) => (
+        <InlineStack key={`${progress}-${index}`} gap="200" blockAlign="center" wrap={false}>
+          <Text as="span" variant="bodySm" tone="subdued">{`W${index + 1}`}</Text>
+          <Box width="100%"><ProgressBar progress={progress} size="small" tone={progress > 60 ? "success" : "primary"} /></Box>
+          <Text as="span" variant="bodySm" tone="subdued">{progress}%</Text>
+        </InlineStack>
+      ))}
+      <InlineStack gap="400">
+        <Badge tone="success">Completed</Badge>
+        <Badge tone="info">In Progress</Badge>
+        <Badge tone="warning">Pending</Badge>
       </InlineStack>
-    </Box>
+    </BlockStack>
   );
 }
 
-/* ─── main component ───────────────────────────────────────── */
+function Distribution({ counts, total }) {
+  const entries = [
+    ["In Progress", counts.IN_PROGRESS || 0, "info"],
+    ["Completed", counts.COMPLETED || 0, "success"],
+    ["Pending", counts.PENDING_APPROVAL || 0, "warning"],
+    ["On Hold", counts.PAUSED || 0, "critical"],
+  ];
+  return (
+    <BlockStack gap="300">
+      <InlineStack align="center"><Text as="p" variant="heading2xl" fontWeight="bold">{total}</Text></InlineStack>
+      <Text as="p" variant="bodySm" tone="subdued" alignment="center">Total Audits</Text>
+      {entries.map(([label, count, tone]) => (
+        <InlineStack key={label} align="space-between" blockAlign="center">
+          <InlineStack gap="200" blockAlign="center"><Badge tone={tone}>{label}</Badge><Text as="span" variant="bodySm">{count}</Text></InlineStack>
+          <Text as="span" variant="bodySm" tone="subdued">{total ? Math.round((count / total) * 100) : 0}%</Text>
+        </InlineStack>
+      ))}
+    </BlockStack>
+  );
+}
+
 export default function Dashboard() {
-  const [dismissed, setDismissed] = useState(false);
+  const { request, loading, error } = useApi();
+  const [audits, setAudits] = useState([]);
+
+  const fetchDashboard = useCallback(async () => {
+    try {
+      const response = await request((api) => api.get("/audits"));
+      setAudits(response?.data || []);
+    } catch {
+      setAudits([]);
+    }
+  }, [request]);
+
+  useEffect(() => { fetchDashboard(); }, [fetchDashboard]);
+
+  const counts = useMemo(() => audits.reduce((result, audit) => {
+    result[audit.status] = (result[audit.status] || 0) + 1;
+    return result;
+  }, {}), [audits]);
+  const activeAudits = audits.filter((audit) => ["IN_PROGRESS", "PAUSED", "PENDING_APPROVAL"].includes(audit.status)).slice(0, 5);
+  const productsScanned = audits.reduce((sum, audit) => sum + Number(audit.totalItemsCounted || 0), 0);
+  const discrepancies = audits.reduce((sum, audit) => sum + Math.abs(Number(audit.totalNetVariance || 0)), 0);
+  const pending = counts.PENDING_APPROVAL || 0;
 
   return (
     <Page
-      title="Dashboard"
-      subtitle="Stock-Proof — Inventory Audit Management"
-      primaryAction={{ content: "Start New Audit" }}
-      secondaryActions={[{ content: "Refresh", icon: RefreshIcon, onAction: () => window.location.reload() }, { content: "View Reports" }]}
+      title="Good morning, Arman!"
+      subtitle="Here is what's happening with your inventory audits today."
+      primaryAction={{ content: "Start New Audit", url: "/app/activeAudit" }}
+      secondaryActions={[{ content: "Refresh", icon: RefreshIcon, onAction: fetchDashboard, loading }, { content: "View Reports", url: "/app/auditHistory" }]}
     >
-      <BlockStack gap="600">
-
-        {/* ── Notification banner ── */}
-        {!dismissed && (
-          <Banner
-            title="3 audits are currently in progress"
-            tone="info"
-            onDismiss={() => setDismissed(true)}
-            action={{ content: "View Active Audits", url: "/app/activeAudit" }}
-          >
-            <Text as="p" variant="bodyMd">
-              You have pending approvals that require your attention.
-            </Text>
-          </Banner>
-        )}
-
-        {/* ── Stat cards – 4-column grid ── */}
+      <BlockStack gap="400">
+        {error && <Banner tone="critical" title="Unable to load dashboard"><p>{error}</p></Banner>}
         <Grid>
-          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}>
-            <StatCard stat={statsData[0]} />
-          </Grid.Cell>
-          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}>
-            <StatCard stat={statsData[1]} />
-          </Grid.Cell>
-          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}>
-            <StatCard stat={statsData[2]} />
-          </Grid.Cell>
-          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}>
-            <StatCard stat={statsData[3]} />
-          </Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}><MetricCard label="Active Audits" value={counts.IN_PROGRESS || 0} detail={`${pending} pending approval`} tone="info" icon={ClipboardIcon} /></Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}><MetricCard label="Discrepancies Found" value={discrepancies} detail="Across all audits" tone="critical" icon={AlertTriangleIcon} /></Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}><MetricCard label="Pending Approval" value={pending} detail="Needs review" tone="warning" icon={ClockIcon} /></Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3, xl: 3 }}><MetricCard label="Products Scanned" value={productsScanned.toLocaleString()} detail="Across all audits" tone="success" icon={PackageIcon} /></Grid.Cell>
         </Grid>
-
-        {/* ── Active Audits (2/3) + Recent Activity (1/3) ── */}
         <Grid>
-          <Grid.Cell columnSpan={{ xs: 6, sm: 6, md: 6, lg: 8, xl: 8 }}>
-            <Card>
-              <BlockStack gap="400">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingMd">Active Audits</Text>
-                  <Button variant="plain" url="/app/activeAudit">View all</Button>
-                </InlineStack>
-
-                <Divider />
-
-                <Box paddingBlockEnd="100">
-                  <InlineStack align="space-between">
-                    <Text as="p" variant="bodySm" tone="subdued" fontWeight="semibold">
-                      AUDIT NAME
-                    </Text>
-                    <Text as="p" variant="bodySm" tone="subdued" fontWeight="semibold">
-                      STATUS / ASSIGNEE
-                    </Text>
-                  </InlineStack>
-                </Box>
-
-                <BlockStack gap="0">
-                  {activeAudits.map((audit, i) => (
-                    <div key={audit.name}>
-                      <AuditRow audit={audit} />
-                      {i < activeAudits.length - 1 && <Divider />}
-                    </div>
-                  ))}
-                </BlockStack>
-              </BlockStack>
-            </Card>
-          </Grid.Cell>
-
-          <Grid.Cell columnSpan={{ xs: 6, sm: 6, md: 6, lg: 4, xl: 4 }}>
-            <Card>
-              <BlockStack gap="400">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingMd">Recent Activity</Text>
-                  <Button variant="plain" url="/app/auditHistory">History</Button>
-                </InlineStack>
-
-                <Divider />
-
-                <BlockStack gap="0">
-                  {recentActivity.map((row, i) => (
-                    <div key={row.item}>
-                      <ActivityRow row={row} />
-                      {i < recentActivity.length - 1 && <Divider />}
-                    </div>
-                  ))}
-                </BlockStack>
-              </BlockStack>
-            </Card>
-          </Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 6, md: 6, lg: 8, xl: 8 }}><Card padding="400"><BlockStack gap="300"><InlineStack align="space-between"><Text as="h2" variant="headingMd">Audit Progress Overview</Text><Badge tone="info">Last 7 Audits</Badge></InlineStack><ProgressOverview audits={audits} /></BlockStack></Card></Grid.Cell>
+          <Grid.Cell columnSpan={{ xs: 6, sm: 6, md: 6, lg: 4, xl: 4 }}><Card padding="400"><BlockStack gap="300"><Text as="h2" variant="headingMd">Audit Status Distribution</Text><Distribution counts={counts} total={audits.length} /></BlockStack></Card></Grid.Cell>
         </Grid>
-
-        {/* ── Quick Actions ── */}
-        <Card>
-          <BlockStack gap="400">
-            <Text as="h2" variant="headingMd">Quick Actions</Text>
-            <Divider />
-            <InlineStack gap="300" wrap>
-              <Button variant="primary" url="/app/activeAudit">View Active Audits</Button>
-              <Button url="/app/discrepancies">Manage Discrepancies</Button>
-              <Button url="/app/approvals">Pending Approvals</Button>
-              <Button url="/app/auditHistory">Audit History</Button>
-              <Button url="/app/settings">Settings</Button>
-            </InlineStack>
-          </BlockStack>
+        <Card padding="0">
+          <Box padding="400"><InlineStack align="space-between"><Text as="h2" variant="headingMd">All Audits</Text><Button variant="plain" url="/app/activeAudit">View all</Button></InlineStack></Box>
+          <Divider />
+          {loading && !audits.length ? <Box padding="600"><InlineStack align="center"><Spinner /></InlineStack></Box> : activeAudits.length ? <BlockStack gap="0">
+            <Box padding="300"><InlineStack align="space-between"><Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">AUDIT NAME</Text><Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">STATUS / ASSIGNEE</Text><Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">PROGRESS</Text><Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">STARTED</Text></InlineStack></Box>
+            {activeAudits.map((audit) => { const progress = Number(audit.progress || (audit.totalItemsCounted ? 50 : 0)); return <Box key={audit._id} padding="300" borderBlockStartWidth="025" borderColor="border"><InlineStack align="space-between" blockAlign="center" wrap={false} gap="300"><BlockStack gap="050"><Text as="span" fontWeight="semibold">{audit.name || `Audit #${audit.auditNumber}`}</Text><Text as="span" variant="bodySm" tone="subdued">{audit.locationId || "Location audit"}</Text></BlockStack><InlineStack gap="200" blockAlign="center" wrap={false}><Badge tone={statusTone[audit.status] || "info"}>{statusLabel(audit.status)}</Badge><Text as="span" variant="bodySm" tone="subdued">{audit.staffId?.name || "Unassigned"}</Text></InlineStack><Box width="30%"><ProgressBar progress={progress} size="small" tone={progress > 60 ? "success" : "primary"} /></Box><Text as="span" variant="bodySm" tone="subdued">{formatDate(audit.updatedAt || audit.startedAt)}</Text></InlineStack></Box>; })}
+          </BlockStack> : <Box padding="500"><Text as="p" tone="subdued">No active audits found.</Text></Box>}
         </Card>
-
       </BlockStack>
     </Page>
   );

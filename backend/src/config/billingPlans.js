@@ -4,46 +4,60 @@
  * Shopify Billing plan definitions for Stock-proof.
  * Each key matches the `billingPlan` field on the Shop model.
  *
- * Prices are in USD. trialDays controls the Shopify free-trial period.
- * The `test` flag is set automatically by the controller based on NODE_ENV.
+ * IMPORTANT: Prices here must match the Remix shopify.server.js billing config
+ * (the Remix layer is the canonical billing path; these are used by the
+ * legacy Express REST path and for display purposes).
  */
 
 export const PLANS = {
   starter: {
     /** Plan key — must match Shop.billingPlan enum */
     key: 'starter',
-    /** Display name shown to merchants */
+    /** Display name shown to merchants (must match Remix STARTER_PLAN value) */
     name: 'Starter',
-    /** Monthly price in USD */
-    price: 9.99,
+    /** Monthly price in USD — must match shopify.server.js lineItems amount */
+    price: 29,
     /** Free trial length in days (0 = no trial) */
     trialDays: 7,
     /** Short description shown on the pricing page */
-    description: 'Perfect for small stores running regular stock counts.',
+    description: 'For growing teams that need full audit visibility and approval workflows.',
     /** Feature bullet points */
     features: [
-      'Up to 500 SKUs per audit session',
       'Unlimited audit sessions',
-      'Manager approval workflow',
-      'CSV & PDF export',
-      'Email notifications',
+      'Approval workflows',
+      '1 year audit history',
+      'Priority email support',
+      'API access & CSV/PDF export',
     ],
   },
   pro: {
     key: 'pro',
     name: 'Pro',
-    price: 29.99,
+    price: 79,
     trialDays: 7,
-    description: 'For high-volume stores that need advanced inventory control.',
+    description: 'For operations teams managing multi-store inventory at scale.',
     features: [
-      'Unlimited SKUs per audit session',
-      'Unlimited audit sessions',
-      'Manager approval workflow',
-      'Priority support',
-      'Advanced analytics & reports',
-      'Multi-location support',
-      'CSV, PDF & XLSX export',
+      'Everything in Starter',
+      'Multi-store reporting',
+      'Custom audit schedules',
+      'Unlimited audit history',
+      'Dedicated account manager',
+      'Advanced analytics & AI alerts',
       'Webhook integrations',
+    ],
+  },
+  enterprise: {
+    key: 'enterprise',
+    name: 'Enterprise',
+    price: 60,
+    trialDays: 7,
+    description: 'Custom deployments with dedicated support and SLA guarantees.',
+    features: [
+      'Everything in Pro',
+      '24/7 SLA support',
+      'Custom integrations',
+      'Dedicated infrastructure',
+      'SSO / SAML',
     ],
   },
 };

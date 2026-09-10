@@ -17,32 +17,68 @@ export const action = async ({ request }) => {
       break;
 
     case "APP_SUBSCRIPTIONS_UPDATE":
-      // This is triggered whenever a subscription is created, updated, or cancelled
+      // Fires when a subscription is created, updated, cancelled, frozen, or expired.
+      // This is the authoritative source of truth for billing state changes that happen
+      // OUTSIDE of our app (e.g. merchant cancels from Shopify billing settings).
       if (payload?.app_subscription) {
         const sub = payload.app_subscription;
-        
-        // Ensure tbl_Subscription exists or updates it
+
+        // Normalize the Shopify plan name to our enum key
+        const rawName   = (sub.name || "").toLowerCase().trim();
+        const planKey   = rawName === "enterprise"
+          ? "ENTERPRISE"
+          : rawName === "pro"
+          ? "PRO"
+          : rawName === "starter"
+          ? "STARTER"
+          : "STARTER";
+
+        // Map Shopify status (UPPERCASE from webhook) to our DB status
+        const rawStatus  = (sub.status || "").toUpperCase();
+        const statusMap  = {
+          ACTIVE:    "ACTIVE",
+          PENDING:   "PENDING",
+          ACCEPTED:  "ACTIVE",    // accepted = approved by merchant, treat as active
+          DECLINED:  "DECLINED",
+          EXPIRED:   "CANCELLED", // expired approval window → treat same as cancelled
+          FROZEN:    "SUSPENDED",
+          CANCELLED: "CANCELLED",
+        };
+        const dbStatus = statusMap[rawStatus] ?? "CANCELLED";
+
+        const price    = parseFloat(sub.line_items?.[0]?.price?.amount ?? "0");
+        const currency = sub.line_items?.[0]?.price?.currency_code ?? "USD";
+        const interval = sub.line_items?.[0]?.interval ?? "MONTHLY";
+
+        const isCancelled = ["CANCELLED", "DECLINED", "EXPIRED", "FROZEN"].includes(rawStatus);
+
         await db.tbl_Subscription.upsert({
-          where: { shopId: shop },
+          where:  { shopId: shop },
           update: {
-            plan: sub.name,
-            status: sub.status,
-            shopifySubscriptionId: sub.admin_graphql_api_id,
-            price: parseFloat(sub.line_items?.[0]?.price?.amount || "0"),
-            currency: sub.line_items?.[0]?.price?.currency_code || "USD",
-            billingInterval: sub.line_items?.[0]?.interval || "MONTHLY",
-            updatedAt: new Date(),
+            plan:                    planKey,
+            status:                  dbStatus,
+            shopifySubscriptionId:   sub.admin_graphql_api_id ?? null,
+            price,
+            currency,
+            billingInterval:         interval,
+            cancelledAt:             isCancelled ? new Date() : null,
+            cancellationReason:      isCancelled ? `Shopify webhook: ${rawStatus}` : null,
+            updatedAt:               new Date(),
           },
           create: {
-            shopId: shop,
-            plan: sub.name,
-            status: sub.status,
-            shopifySubscriptionId: sub.admin_graphql_api_id,
-            price: parseFloat(sub.line_items?.[0]?.price?.amount || "0"),
-            currency: sub.line_items?.[0]?.price?.currency_code || "USD",
-            billingInterval: sub.line_items?.[0]?.interval || "MONTHLY",
+            shopId:                  shop,
+            plan:                    planKey,
+            status:                  dbStatus,
+            shopifySubscriptionId:   sub.admin_graphql_api_id ?? null,
+            price,
+            currency,
+            billingInterval:         interval,
+            cancelledAt:             isCancelled ? new Date() : null,
+            cancellationReason:      isCancelled ? `Shopify webhook: ${rawStatus}` : null,
           },
         });
+
+        console.log(`[Webhook] APP_SUBSCRIPTIONS_UPDATE: shop=${shop} plan=${planKey} status=${dbStatus}`);
       }
       break;
 

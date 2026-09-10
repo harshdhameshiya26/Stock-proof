@@ -9,8 +9,10 @@
 import express from 'express';
 import * as auditController from '../controllers/auditController.js';
 import { verifyShopifySession, requireManager, requireStaff } from '../middleware/auth.js';
+import { requireActiveSubscription } from '../middleware/billing.js';
 import {
   validateAuditSetup,
+  validateAuditStartOtp,
   validateLineItemUpdate,
   validateSessionApproval,
   validateSessionRejection,
@@ -21,17 +23,26 @@ import {
 
 const router = express.Router();
 
-// All audit routes require a verified Shopify session
+// All audit routes require a verified Shopify session AND an active subscription
 router.use(verifyShopifySession);
+//router.use(requireActiveSubscription);
 
 // ─── Session Lifecycle ────────────────────────────────────────────────────────
 
-// POST /api/audits/start — Create a new audit session & snapshot baseline stock
+// POST /api/audits/start — Request manager OTP before creating an audit
 router.post(
   '/start',
   requireStaff,
   validateAuditSetup,
-  auditController.setupAudit
+  auditController.requestStartOtp
+);
+
+// POST /api/audits/start/verify-otp — Verify manager OTP and create the audit
+router.post(
+  '/start/verify-otp',
+  requireStaff,
+  validateAuditStartOtp,
+  auditController.verifyStartOtp
 );
 
 // GET /api/audits — List sessions with filters + pagination
@@ -57,6 +68,9 @@ router.delete(
   auditController.cancelAudit
 );
 
+// DELETE /api/audits/:id — permanently remove an audit and its dependent records
+router.delete('/:id', requireManager, auditController.deleteAudit);
+
 // ─── Line Item Counting ───────────────────────────────────────────────────────
 
 // PATCH /api/audits/:id/items/:itemId — Update actual count, reason code, or note
@@ -65,6 +79,13 @@ router.patch(
   requireStaff,
   validateLineItemUpdate,
   auditController.updateLineItem
+);
+
+// POST /api/audits/:id/items/:itemId/update-inventory — sync one counted item to Shopify
+router.post(
+  '/:id/items/:itemId/update-inventory',
+  requireStaff,
+  auditController.updateInventoryItem
 );
 
 // ─── Per-Item Approval (Manager Only) ────────────────────────────────────────

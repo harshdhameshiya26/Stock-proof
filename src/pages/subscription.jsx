@@ -96,6 +96,29 @@ const PLANS = [
       exportReports: true,
     },
   },
+  {
+    id: "enterprise",
+    name: "Enterprise",
+    monthlyPrice: 60,
+    yearlyPrice: 48,
+    description: "Custom deployments with dedicated support and SLA guarantees.",
+    badge: "Enterprise",
+    featured: false,
+    cta: "Upgrade to Enterprise",
+    color: "#6d28d9",
+    features: {
+      activeAudits: "Unlimited",
+      discrepancyAlerts: "Advanced + AI",
+      approvalWorkflows: true,
+      multiStore: true,
+      customSchedules: true,
+      auditHistory: "Unlimited",
+      support: "24/7 SLA",
+      workspaces: "Unlimited",
+      apiAccess: true,
+      exportReports: true,
+    },
+  },
 ];
 
 const FEATURE_ROWS = [
@@ -125,9 +148,8 @@ function FeatureValue({ value }) {
 }
 
 /* ─── plan card ────────────────────────────────────────────── */
-function PlanCard({ plan, billingPeriod, subscribeFetcher, cancelFetcher, onCancelClick }) {
-  const price  = billingPeriod === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
-  const saving = plan.monthlyPrice > 0 ? Math.round((1 - plan.yearlyPrice / plan.monthlyPrice) * 100) : 0;
+function PlanCard({ plan, subscribeFetcher, cancelFetcher, onCancelClick }) {
+  const price = plan.monthlyPrice;
 
   // Subscribe loading: subscribeFetcher is submitting for THIS plan
   const submittingPlanId = subscribeFetcher.state !== "idle"
@@ -183,9 +205,6 @@ function PlanCard({ plan, billingPeriod, subscribeFetcher, cancelFetcher, onCanc
               {plan.monthlyPrice === 0 ? "/ forever" : "/ mo"}
             </Text>
           </InlineStack>
-          {billingPeriod === "yearly" && saving > 0 && (
-            <Badge tone="success">Save {saving}% yearly</Badge>
-          )}
         </BlockStack>
 
         <Text as="p" variant="bodySm" tone="subdued">{plan.description}</Text>
@@ -254,8 +273,11 @@ function PlanCard({ plan, billingPeriod, subscribeFetcher, cancelFetcher, onCanc
 
 /* ─── main page ────────────────────────────────────────────── */
 export default function SubscriptionPage() {
-  const loaderData  = useLoaderData();
-  const activePlan  = loaderData?.activePlan ?? null;
+  const loaderData      = useLoaderData();
+  const activePlan      = loaderData?.activePlan ?? null;
+  const billingMode     = loaderData?.billingMode ?? "live";
+  const billingApproved = loaderData?.billingApproved ?? false;
+  const billingDeclined = loaderData?.billingDeclined ?? false;
   const { revalidate, state: revalidationState } = useRevalidator();
 
   // Two separate fetchers:
@@ -265,18 +287,31 @@ export default function SubscriptionPage() {
   const subscribeFetcher = useFetcher();
   const cancelFetcher    = useFetcher();
 
-  const [billingPeriod, setBillingPeriod] = useState("monthly");
   const [activeTab, setActiveTab]         = useState("plans");
   const [cancelModal, setCancelModal]     = useState({ open: false, plan: null });
   const [toastActive, setToastActive]     = useState(false);
   const [toastMessage, setToastMessage]   = useState("");
   const [toastError, setToastError]       = useState(false);
+  // Track if we've already shown + dismissed the approval banner this session
+  const [approvalBannerDismissed, setApprovalBannerDismissed] = useState(false);
 
   const showToast = useCallback((msg, isError = false) => {
     setToastMessage(msg);
     setToastError(isError);
     setToastActive(true);
   }, []);
+
+  // After showing the billing_approved banner, strip the query param from the URL
+  // so a page refresh doesn't re-show it. Use replaceState (no full navigation).
+  useEffect(() => {
+    if (billingApproved && !approvalBannerDismissed) {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has("billing_approved")) {
+        url.searchParams.delete("billing_approved");
+        window.history.replaceState({}, "", url.toString());
+      }
+    }
+  }, [billingApproved, approvalBannerDismissed]);
 
   // When server returns { confirmationUrl }, navigate TOP window to break out of iframe
   useEffect(() => {
@@ -291,17 +326,19 @@ export default function SubscriptionPage() {
     }
   }, [subscribeFetcher.state, subscribeFetcher.data, showToast]);
 
-  // Handle cancel response
+  // Handle cancel response — revalidate loader so plan cards update immediately
   useEffect(() => {
     if (cancelFetcher.state === "idle" && cancelFetcher.data) {
       if (cancelFetcher.data.success) {
         showToast(cancelFetcher.data.message || "Subscription cancelled.", false);
         setCancelModal({ open: false, plan: null });
+        // Re-fetch loader data so the plan card flips back to "Free"
+        revalidate();
       } else if (cancelFetcher.data.error) {
         showToast(cancelFetcher.data.error, true);
       }
     }
-  }, [cancelFetcher.state, cancelFetcher.data, showToast]);
+  }, [cancelFetcher.state, cancelFetcher.data, showToast, revalidate]);
 
   const plans = PLANS.map((p) => ({
     ...p,
@@ -319,9 +356,14 @@ export default function SubscriptionPage() {
     cancelFetcher.submit(fd, { method: "post" });
   };
 
-  const subscribeError = subscribeFetcher.state === "idle" && subscribeFetcher.data?.error
+  const subscribeError     = subscribeFetcher.state === "idle" && subscribeFetcher.data?.error
     ? subscribeFetcher.data.error : null;
   const subscribeErrorData = subscribeFetcher.data?.errorData ?? null;
+
+  // Show approval banner if the loader detected billing_approved=true and
+  // the user hasn't dismissed it yet
+  const showApprovalBanner = billingApproved && !approvalBannerDismissed;
+  const showDeclinedBanner = billingDeclined;
 
   return (
     <Frame>
@@ -365,6 +407,7 @@ export default function SubscriptionPage() {
       </Modal>
 
       <Page
+        fullWidth
         title="Plans & Billing"
         subtitle="Manage your Stock-Proof subscription"
         secondaryActions={[
@@ -374,6 +417,35 @@ export default function SubscriptionPage() {
         ]}
       >
         <BlockStack gap="600">
+
+          {/* ── Post-approval success banner ─────────────────────── */}
+          {showApprovalBanner && (
+            <Banner
+              tone="success"
+              title="Subscription activated!"
+              onDismiss={() => setApprovalBannerDismissed(true)}
+            >
+              <Text as="p">
+                You are now on the <strong>{currentPlan?.name ?? "paid"}</strong> plan.
+                All premium features are unlocked immediately.
+              </Text>
+            </Banner>
+          )}
+
+          {/* ── Merchant declined billing ───────────────────────── */}
+          {showDeclinedBanner && (
+            <Banner tone="warning" title="Billing not approved">
+              <Text as="p">
+                You declined the subscription charge. You can upgrade anytime from this page.
+              </Text>
+            </Banner>
+          )}
+
+          {billingMode === "test" && (
+            <Banner tone="warning" title="Test billing mode">
+              <Text as="p">Shopify will show a test charge approval screen. Set BILLING_TEST_MODE=false before production billing.</Text>
+            </Banner>
+          )}
 
           {/* Subscribe billing error */}
           {subscribeError && (
@@ -400,7 +472,8 @@ export default function SubscriptionPage() {
             </Banner>
           )}
 
-          <Card>
+          {/* ── Current plan summary card ─────────────────────────── */}
+          <Card padding="500">
             <InlineStack align="space-between" blockAlign="center" wrap={false}>
               <InlineStack gap="400" blockAlign="center">
                 <div style={{
@@ -435,6 +508,7 @@ export default function SubscriptionPage() {
             </InlineStack>
           </Card>
 
+          {/* ── Tab nav ──────────────────────────────────────────── */}
           <InlineStack gap="200">
             {[
               { id: "plans", label: "Plans" },
@@ -448,46 +522,26 @@ export default function SubscriptionPage() {
             ))}
           </InlineStack>
 
+          {/* ── Plans tab ─────────────────────────────────────────── */}
           {activeTab === "plans" && (
             <BlockStack gap="500">
-              <InlineStack align="center" gap="300" blockAlign="center">
-                <Text as="p" variant="bodyMd" tone={billingPeriod === "monthly" ? "base" : "subdued"}>Monthly</Text>
-                <button
-                  onClick={() => setBillingPeriod(b => b === "monthly" ? "yearly" : "monthly")}
-                  style={{
-                    width: 52, height: 28, borderRadius: 999, border: "none",
-                    background: billingPeriod === "yearly" ? "#008060" : "#d1d5db",
-                    cursor: "pointer", position: "relative", transition: "background 0.25s", flexShrink: 0,
-                  }}
-                  aria-label="Toggle billing period"
-                >
-                  <span style={{
-                    position: "absolute", top: 3, left: billingPeriod === "yearly" ? 26 : 3,
-                    width: 22, height: 22, borderRadius: "50%",
-                    background: "#fff", boxShadow: "0 1px 4px rgba(0,0,0,0.18)", transition: "left 0.25s",
-                  }} />
-                </button>
-                <InlineStack gap="150" blockAlign="center">
-                  <Text as="p" variant="bodyMd" tone={billingPeriod === "yearly" ? "base" : "subdued"}>Yearly</Text>
-                  <Badge tone="success">Save up to 20%</Badge>
-                </InlineStack>
-              </InlineStack>
-
-              <Grid>
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: "var(--p-space-400)",
+              }}>
                 {plans.map((plan) => (
-                  <Grid.Cell key={plan.id} columnSpan={{ xs: 6, sm: 6, md: 6, lg: 4, xl: 4 }}>
-                    <PlanCard
-                      plan={plan}
-                      billingPeriod={billingPeriod}
-                      subscribeFetcher={subscribeFetcher}
-                      cancelFetcher={cancelFetcher}
-                      onCancelClick={handleCancelClick}
-                    />
-                  </Grid.Cell>
+                  <PlanCard
+                    key={plan.id}
+                    plan={plan}
+                    subscribeFetcher={subscribeFetcher}
+                    cancelFetcher={cancelFetcher}
+                    onCancelClick={handleCancelClick}
+                  />
                 ))}
-              </Grid>
+              </div>
 
-              <Card>
+              <Card padding="500">
                 <InlineStack align="space-around" wrap gap="400">
                   {[
                     { icon: "🔒", label: "Secure checkout", sub: "via Shopify Payments" },
@@ -506,24 +560,27 @@ export default function SubscriptionPage() {
             </BlockStack>
           )}
 
+          {/* ── Feature comparison tab ────────────────────────────── */}
           {activeTab === "comparison" && (
             <Card>
               <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">Feature Comparison</Text>
                 <Divider />
                 <DataTable
-                  columnContentTypes={["text", "text", "text", "text"]}
+                  columnContentTypes={["text", "text", "text", "text", "text"]}
                   headings={[
                     "Feature",
                     <Text as="span" fontWeight="bold">Free</Text>,
                     <Text as="span" fontWeight="bold" tone="magic">Starter — $29/mo</Text>,
                     <Text as="span" fontWeight="bold">Pro — $79/mo</Text>,
+                    <Text as="span" fontWeight="bold">Enterprise — $60/mo</Text>,
                   ]}
                   rows={FEATURE_ROWS.map((row) => [
                     <Text as="span" variant="bodySm" fontWeight="semibold">{row.label}</Text>,
                     <FeatureValue value={PLANS[0].features[row.key]} />,
                     <FeatureValue value={PLANS[1].features[row.key]} />,
                     <FeatureValue value={PLANS[2].features[row.key]} />,
+                    <FeatureValue value={PLANS[3].features[row.key]} />,
                   ])}
                 />
                 <InlineStack gap="300" align="center">
@@ -533,6 +590,7 @@ export default function SubscriptionPage() {
             </Card>
           )}
 
+          {/* ── Billing history tab ───────────────────────────────── */}
           {activeTab === "history" && (
             <BlockStack gap="400">
               <Card>

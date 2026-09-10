@@ -62,7 +62,7 @@ export const authenticateUser = async (req, res, next) => {
 
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await User.findById(decoded.sub || decoded.userId)
-      .select('name email role shopId lastLoginAt lastLogoutAt jwtToken isEmailVerified')
+      .select('name email role shopId status lastLoginAt lastLogoutAt jwtToken isEmailVerified')
       .lean();
 
     if (!user) {
@@ -71,6 +71,9 @@ export const authenticateUser = async (req, res, next) => {
 
     if (user.jwtToken && user.jwtToken !== token) {
       throw new AppError('Unauthorized: Token mismatch', 401);
+    }
+    if (user.status === 'SUSPENDED') {
+      throw new AppError('Unauthorized: User account is suspended', 403);
     }
 
     req.user = user;
@@ -99,7 +102,7 @@ export const authenticateUserForDeletion = async (req, res, next) => {
     const token = authHeader.replace('Bearer ', '').trim();
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await User.findById(decoded.sub || decoded.userId)
-      .select('name email role shopId lastLoginAt lastLogoutAt jwtToken isEmailVerified')
+      .select('name email role shopId status lastLoginAt lastLogoutAt jwtToken isEmailVerified')
       .lean();
 
     if (!user) throw new AppError('Unauthorized: User not found for this token', 401);
@@ -207,10 +210,22 @@ export const requireRole = (allowedRoles = []) => {
 
       const shopId = req.shop?._id;
       const isLocalDevelopment = process.env.NODE_ENV !== 'production';
+      const managerAccess = {
+        role: { $in: allowedRoles.filter((role) => role === 'MANAGER' || role === 'ADMIN') },
+        status: { $ne: 'INVITED' },
+      };
+      const auditorAccess = {
+        role: 'STAFF',
+        status: 'ACTIVE',
+        isEmailVerified: true,
+      };
+      const accessRules = allowedRoles.includes('STAFF')
+        ? { $or: [auditorAccess, managerAccess] }
+        : managerAccess;
       const staffQuery = staffId
-        ? { _id: staffId, shopId }
+        ? { _id: staffId, shopId, ...accessRules }
         : isLocalDevelopment
-          ? { shopId, role: { $in: allowedRoles } }
+          ? { shopId, ...accessRules }
           : null;
 
       if (!staffQuery) {

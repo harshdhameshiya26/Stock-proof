@@ -31,7 +31,9 @@ const sanitizeUser = (user) => ({
   email: user.email,
   role: user.role,
   shopId: user.shopId || null,
+  status: user.status || 'ACTIVE',
   isEmailVerified: user.isEmailVerified || false,
+  activatedAt: user.activatedAt || null,
   lastLoginAt: user.lastLoginAt || null,
   lastLogoutAt: user.lastLogoutAt || null,
   createdAt: user.createdAt,
@@ -263,9 +265,16 @@ export const loginUser = async (req, res, next) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const user = await User.findOne({ email: normalizedEmail }).select('+password +jwtToken');
+    const user = await User.findOne({ email: normalizedEmail }).select('+password +jwtToken +loginOtp +loginOtpExpiresAt');
     if (!user) {
       throw new AppError('Invalid email or password', 401);
+    }
+
+    if (user.status === 'INVITED') {
+      throw new AppError('This member has not activated their account. Complete activation first.', 403);
+    }
+    if (user.status === 'SUSPENDED') {
+      throw new AppError('This member account is suspended. Contact the store administrator.', 403);
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password || '');
@@ -277,18 +286,106 @@ export const loginUser = async (req, res, next) => {
       throw new AppError('Email is not verified. Please verify the OTP first.', 403);
     }
 
+    const otpCode = createOtp();
+    user.loginOtp = otpCode;
+    user.loginOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+    const emailResult = await sendOtpEmail(user.email, otpCode);
+
+    return res.status(200).json({
+      message: 'Login OTP sent to your email',
+      otpSent: !emailResult.skipped,
+      email: user.email,
+      ...(process.env.NODE_ENV !== 'production' && emailResult.skipped ? { devOtp: otpCode } : {}),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const activateUser = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new AppError('A valid email is required', 400);
+    }
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      throw new AppError('Password must be at least 8 characters long', 400);
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('+password +activationOtp +activationOtpExpiresAt');
+    if (!user) throw new AppError('Invitation not found. Ask the store manager to invite you again.', 404);
+    if (user.status !== 'INVITED') throw new AppError('This account is already activated. Use login instead.', 409);
+
+    user.password = await bcrypt.hash(password, 12);
+    user.activationOtp = createOtp();
+    user.activationOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+    const emailResult = await sendOtpEmail(user.email, user.activationOtp);
+
+    return res.status(200).json({
+      message: 'Activation OTP sent to your email',
+      email: user.email,
+      otpSent: !emailResult.skipped,
+      ...(process.env.NODE_ENV !== 'production' && emailResult.skipped ? { devOtp: user.activationOtp } : {}),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const verifyActivationOtp = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp || typeof otp !== 'string' || otp.trim().length !== 6) {
+      throw new AppError('Email and a valid 6-digit OTP are required', 400);
+    }
+    const user = await User.findOne({ email: email.toLowerCase().trim() })
+      .select('+password +activationOtp +activationOtpExpiresAt +jwtToken');
+    if (!user || user.status !== 'INVITED') throw new AppError('Invitation not found or already activated', 404);
+    if (!user.activationOtp || !user.activationOtpExpiresAt || user.activationOtpExpiresAt.getTime() < Date.now()) {
+      throw new AppError('Activation OTP has expired. Start activation again.', 401);
+    }
+    if (user.activationOtp !== otp.trim()) throw new AppError('Invalid activation OTP', 401);
+
+    user.status = 'ACTIVE';
+    user.isEmailVerified = true;
+    user.activatedAt = new Date();
+    user.activationOtp = null;
+    user.activationOtpExpiresAt = null;
+    user.lastLoginAt = new Date();
+    const token = signToken(user);
+    user.jwtToken = token;
+    await user.save();
+
+    return res.status(200).json({ message: 'Account activated successfully', token, user: sanitizeUser(user) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const verifyLoginOtp = async (req, res, next) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp || typeof otp !== 'string' || otp.trim().length !== 6) {
+      throw new AppError('Email and a valid 6-digit OTP are required', 400);
+    }
+    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('+loginOtp +loginOtpExpiresAt +jwtToken');
+    if (!user || user.status !== 'ACTIVE') throw new AppError('Active member account not found', 404);
+    if (!user.loginOtp || !user.loginOtpExpiresAt || user.loginOtpExpiresAt.getTime() < Date.now()) {
+      throw new AppError('Login OTP has expired. Start login again.', 401);
+    }
+    if (user.loginOtp !== otp.trim()) throw new AppError('Invalid login OTP', 401);
+
     if (user.jwtToken) revokedTokens.add(user.jwtToken);
     const token = signToken(user);
     user.jwtToken = token;
-
+    user.loginOtp = null;
+    user.loginOtpExpiresAt = null;
     user.lastLoginAt = new Date();
     await user.save();
 
-    return res.status(200).json({
-      message: 'Login successful',
-      token,
-      user: sanitizeUser(user),
-    });
+    return res.status(200).json({ message: 'Login successful', token, user: sanitizeUser(user) });
   } catch (err) {
     next(err);
   }
@@ -364,8 +461,8 @@ export const createUser = async (req, res, next) => {
   try {
     const { name, email, role, shopId, password } = req.body;
 
-    let shopObjectId = null;
-    if (shopId) {
+    let shopObjectId = req.shop?._id || null;
+    if (!shopObjectId && shopId) {
       if (mongoose.isValidObjectId(shopId)) {
         const shop = await Shop.findById(shopId).select('_id').lean();
         if (!shop) throw new AppError(`Shop not found: ${shopId}`, 404);
@@ -419,13 +516,22 @@ export const createUser = async (req, res, next) => {
       email: normalizedEmail,
       role: role || 'STAFF',
       shopId: shopObjectId,
+      status: 'INVITED',
       ...(hashedPassword ? { password: hashedPassword } : {}),
     });
 
+    const invitationOtp = createOtp();
+    user.activationOtp = invitationOtp;
+    user.activationOtpExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await user.save();
+    const emailResult = await sendOtpEmail(user.email, invitationOtp);
+
     return res.status(201).json({
-      message: 'User created successfully',
+      message: 'Member invited successfully. They must activate their account before login or assignment.',
       userId: user._id,
       user: sanitizeUser(user),
+      otpSent: !emailResult.skipped,
+      ...(process.env.NODE_ENV !== 'production' && emailResult.skipped ? { devOtp: invitationOtp } : {}),
     });
   } catch (err) {
     next(err);
@@ -440,17 +546,7 @@ export const createUser = async (req, res, next) => {
  */
 export const getUsers = async (req, res, next) => {
   try {
-    const { shopId } = req.query;
     const filter = req.shop?._id ? { shopId: req.shop._id } : {};
-
-    if (shopId) {
-      if (mongoose.isValidObjectId(shopId)) {
-        filter.shopId = shopId;
-      } else {
-        const shop = await Shop.findOne({ shopifyDomain: shopId }).select('_id').lean();
-        filter.shopId = shop?._id || null;
-      }
-    }
 
     const users = await User.find(filter)
       .select('-__v')
@@ -475,6 +571,9 @@ export const getUser = async (req, res, next) => {
 
     const user = await User.findById(id).select('-__v').lean();
     if (!user) throw new AppError('User not found', 404);
+    if (req.shop && user.shopId?.toString() !== req.shop._id?.toString()) {
+      throw new AppError('Forbidden: User does not belong to this store', 403);
+    }
 
     return res.status(200).json({ user });
   } catch (err) {
@@ -491,27 +590,138 @@ export const getUser = async (req, res, next) => {
 export const updateUser = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { role } = req.body;
+    const { name, role, currentPassword, newPassword, resetOtp, roleOtp, managerId } = req.body;
 
     if (!mongoose.isValidObjectId(id)) throw new AppError('Invalid user ID', 400);
 
     const VALID_ROLES = ['STAFF', 'MANAGER', 'ADMIN'];
-    if (!role || !VALID_ROLES.includes(role)) {
+    if (role !== undefined && !VALID_ROLES.includes(role)) {
       throw new AppError(`'role' must be one of: ${VALID_ROLES.join(', ')}`, 400);
     }
 
-    const user = await User.findByIdAndUpdate(
-      id,
-      { $set: { role } },
-      { new: true, runValidators: true }
-    ).select('-__v');
+    const existingUser = await User.findById(id)
+      .select('shopId name role +password +jwtToken +passwordResetOtp +passwordResetOtpExpiresAt +roleChangeOtp +roleChangeOtpExpiresAt');
+    if (!existingUser) throw new AppError('User not found', 404);
+    if (req.shop && existingUser.shopId?.toString() !== req.shop._id?.toString()) {
+      throw new AppError('Forbidden: User does not belong to this store', 403);
+    }
 
-    if (!user) throw new AppError('User not found', 404);
+    if (name !== undefined) {
+      if (typeof name !== 'string' || name.trim().length < 2) {
+        throw new AppError('Name must be at least 2 characters long', 400);
+      }
+      existingUser.name = name.trim();
+    }
+
+    if (role !== undefined && role !== existingUser.role) {
+      if (!managerId || !mongoose.isValidObjectId(managerId) || !roleOtp || typeof roleOtp !== 'string' || roleOtp.trim().length !== 6) {
+        throw new AppError('A manager verification OTP is required to change role', 401);
+      }
+      const manager = await User.findOne({
+        _id: managerId,
+        shopId: req.shop?._id,
+        role: { $in: ['MANAGER', 'ADMIN'] },
+      }).select('+roleChangeOtp +roleChangeOtpExpiresAt').lean();
+      if (!manager || !manager.roleChangeOtp || !manager.roleChangeOtpExpiresAt || manager.roleChangeOtpExpiresAt.getTime() < Date.now()) {
+        throw new AppError('Role change OTP has expired. Request a new OTP.', 401);
+      }
+      if (manager.roleChangeOtp !== roleOtp.trim()) {
+        throw new AppError('Invalid manager role change OTP', 401);
+      }
+      existingUser.role = role;
+      await User.updateOne({ _id: manager._id }, { $set: { roleChangeOtp: null, roleChangeOtpExpiresAt: null } });
+    }
+
+    if (newPassword !== undefined) {
+      if (typeof newPassword !== 'string' || newPassword.length < 8) {
+        throw new AppError('New password must be at least 8 characters long', 400);
+      }
+      if (resetOtp) {
+        if (!existingUser.passwordResetOtp || !existingUser.passwordResetOtpExpiresAt || existingUser.passwordResetOtpExpiresAt.getTime() < Date.now()) {
+          throw new AppError('Password reset OTP has expired. Request a new OTP.', 401);
+        }
+        if (existingUser.passwordResetOtp !== resetOtp.trim()) {
+          throw new AppError('Invalid password reset OTP', 401);
+        }
+        existingUser.passwordResetOtp = null;
+        existingUser.passwordResetOtpExpiresAt = null;
+      } else if (!currentPassword || !(await bcrypt.compare(currentPassword, existingUser.password || ''))) {
+        throw new AppError('Current password is incorrect', 401);
+      }
+      existingUser.password = await bcrypt.hash(newPassword, 12);
+      if (existingUser.jwtToken) {
+        revokedTokens.add(existingUser.jwtToken);
+        existingUser.jwtToken = null;
+      }
+    }
+
+    await existingUser.save();
+    const user = await User.findById(id).select('-__v').lean();
 
     return res.status(200).json({
-      message: 'User role updated',
-      user: { _id: user._id, name: user.name, email: user.email, role: user.role },
+      message: 'Member profile updated successfully',
+      user: sanitizeUser(user),
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const requestPasswordResetOtp = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) throw new AppError('Invalid user ID', 400);
+    const user = await User.findById(id).select('_id email shopId +passwordResetOtp +passwordResetOtpExpiresAt');
+    if (!user) throw new AppError('User not found', 404);
+    if (req.shop && user.shopId?.toString() !== req.shop._id?.toString()) {
+      throw new AppError('Forbidden: User does not belong to this store', 403);
+    }
+
+    const otp = createOtp();
+    user.passwordResetOtp = otp;
+    user.passwordResetOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+    const emailResult = await sendOtpEmail(user.email, otp);
+    const response = { message: `Password reset OTP sent to ${user.email}`, email: user.email, otpSent: !emailResult.skipped };
+    if (process.env.NODE_ENV !== 'production' && emailResult.skipped) response.devOtp = otp;
+    return res.status(200).json(response);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const requestRoleChangeOtp = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) throw new AppError('Invalid user ID', 400);
+    const user = await User.findById(id).select('_id shopId');
+    if (!user) throw new AppError('User not found', 404);
+    if (req.shop && user.shopId?.toString() !== req.shop._id?.toString()) {
+      throw new AppError('Forbidden: User does not belong to this store', 403);
+    }
+    const manager = await User.findOne({
+      shopId: req.shop._id,
+      role: { $in: ['MANAGER', 'ADMIN'] },
+      email: { $exists: true, $ne: '' },
+    }).select('email').sort({ createdAt: 1 }).lean();
+    const managerEmail = manager?.email || req.shop.email;
+    if (!managerEmail) throw new AppError('No manager email is configured for this store', 409);
+
+    const otp = createOtp();
+    const managerAccount = manager
+      ? await User.findById(manager._id).select('+roleChangeOtp +roleChangeOtpExpiresAt')
+      : null;
+    if (!managerAccount) throw new AppError('No registered manager account is available for OTP verification', 409);
+    managerAccount.roleChangeOtp = otp;
+    managerAccount.roleChangeOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await managerAccount.save();
+    const emailResult = await sendOtpEmail(managerEmail, otp);
+    if (emailResult.skipped && process.env.NODE_ENV === 'production') {
+      throw new AppError(`Unable to send role-change OTP: ${emailResult.reason || 'SMTP delivery failed'}`, 502);
+    }
+    const response = { message: `Role change OTP sent to manager email ${managerEmail}`, email: managerEmail, managerId: managerAccount._id, otpSent: !emailResult.skipped };
+    if (process.env.NODE_ENV !== 'production' && emailResult.skipped) response.devOtp = otp;
+    return res.status(200).json(response);
   } catch (err) {
     next(err);
   }
@@ -524,28 +734,32 @@ export const updateUser = async (req, res, next) => {
  */
 export const logoutUser = async (req, res, next) => {
   try {
-    const token = req.token || (req.headers.authorization || '').replace('Bearer ', '').trim();
-    const userId = req.user?._id?.toString();
+    const targetId = req.params.id || req.user?._id?.toString();
+    const target = req.params.id
+      ? await User.findById(req.params.id).select('_id name email shopId +jwtToken')
+      : await User.findById(targetId).select('_id name email shopId +jwtToken');
+    if (!target) throw new AppError('User not found', 404);
+    if (req.params.id && req.shop && target.shopId?.toString() !== req.shop._id?.toString()) {
+      throw new AppError('Forbidden: User does not belong to this store', 403);
+    }
 
-    if (!token || !userId) {
+    const token = target.jwtToken || (req.token || (req.headers.authorization || '').replace('Bearer ', '').trim());
+    const userId = target._id.toString();
+
+    if (!userId) {
       throw new AppError('Unauthorized: You must be logged in to log out', 401);
     }
 
-    revokedTokens.add(token);
+    if (token) revokedTokens.add(token);
     loggedOutUsers.set(userId, new Date().toISOString());
 
-    const user = await User.findById(userId).select('_id name email jwtToken');
-    if (!user) throw new AppError('User not found', 404);
-
-    if (user.jwtToken) {
-      revokedTokens.add(user.jwtToken);
-      user.jwtToken = null;
-      user.lastLogoutAt = new Date();
-      await user.save();
-    }
+    if (target.jwtToken && target.jwtToken !== token) revokedTokens.add(target.jwtToken);
+    target.jwtToken = null;
+    target.lastLogoutAt = new Date();
+    await target.save();
 
     return res.status(200).json({
-      message: `User '${user.name}' has been logged out successfully`,
+      message: `User '${target.name}' has been logged out successfully`,
       userId,
       loggedOutAt: loggedOutUsers.get(userId),
     });
@@ -595,18 +809,27 @@ export const deleteUser = async (req, res, next) => {
   try {
     const { id } = req.params;
     if (!mongoose.isValidObjectId(id)) throw new AppError('Invalid user ID', 400);
-
-    if (req.user && req.user._id?.toString() === id) {
-      throw new AppError('You cannot delete your own account from this route. Use DELETE /api/users/me instead.', 400);
-    }
-
-    const user = await User.findById(id).select('_id name email shopId').lean();
+    const { otp } = req.body || {};
+    const user = await User.findById(id).select('_id name email role shopId +jwtToken +deleteOtp +deleteOtpExpiresAt');
     if (!user) throw new AppError('User not found', 404);
 
     if (req.shop && user.shopId?.toString() !== req.shop._id?.toString()) {
       throw new AppError('Forbidden: User does not belong to this store', 403);
     }
 
+    if (['MANAGER', 'ADMIN'].includes(user.role)) {
+      if (!otp || typeof otp !== 'string' || otp.trim().length !== 6) {
+        throw new AppError('A 6-digit deletion OTP sent to the manager email is required', 401);
+      }
+      if (!user.deleteOtp || !user.deleteOtpExpiresAt || user.deleteOtpExpiresAt.getTime() < Date.now()) {
+        throw new AppError('Deletion OTP has expired. Request a new OTP.', 401);
+      }
+      if (user.deleteOtp !== otp.trim()) {
+        throw new AppError('Invalid deletion OTP', 401);
+      }
+    }
+
+    if (user.jwtToken) revokedTokens.add(user.jwtToken);
     await User.findByIdAndDelete(id);
     loggedOutUsers.delete(id);
 
@@ -614,6 +837,40 @@ export const deleteUser = async (req, res, next) => {
       message: `User '${user.name}' has been permanently deleted`,
       deletedUserId: id,
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const requestDeleteOtp = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) throw new AppError('Invalid user ID', 400);
+
+    const user = await User.findById(id).select('_id name email role shopId +deleteOtp +deleteOtpExpiresAt');
+    if (!user) throw new AppError('User not found', 404);
+    if (req.shop && user.shopId?.toString() !== req.shop._id?.toString()) {
+      throw new AppError('Forbidden: User does not belong to this store', 403);
+    }
+    if (!['MANAGER', 'ADMIN'].includes(user.role)) {
+      throw new AppError('Deletion OTP is required only for manager or administrator accounts', 400);
+    }
+
+    const otp = createOtp();
+    user.deleteOtp = otp;
+    user.deleteOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+    const emailResult = await sendOtpEmail(user.email, otp);
+
+    const response = {
+      message: `Deletion OTP sent to ${user.email}`,
+      email: user.email,
+      otpSent: !emailResult.skipped,
+    };
+    if (process.env.NODE_ENV !== 'production' && emailResult.skipped) {
+      response.devOtp = otp;
+    }
+    return res.status(200).json(response);
   } catch (err) {
     next(err);
   }

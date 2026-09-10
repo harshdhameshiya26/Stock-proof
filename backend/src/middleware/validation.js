@@ -44,6 +44,19 @@ export const validateAuditSetup = (req, res, next) => {
   next();
 };
 
+export const validateAuditStartOtp = (req, res, next) => {
+  const { challengeId, otp } = req.body;
+  const errors = [];
+
+  if (!challengeId || typeof challengeId !== 'string') errors.push("'challengeId' is required.");
+  if (!otp || typeof otp !== 'string' || !/^\d{6}$/.test(otp.trim())) {
+    errors.push("'otp' must be a valid 6-digit code.");
+  }
+
+  if (errors.length) return validationError(res, errors);
+  next();
+};
+
 // ── 2. Line Item Count & Reason Update ───────────────────────────────────────
 
 /**
@@ -209,7 +222,7 @@ export const validateSettingsUpdate = (req, res, next) => {
  * No required body — just validates optional cancelNote
  */
 export const validateSessionCancel = (req, res, next) => {
-  const { cancelNote } = req.body;
+  const { cancelNote } = req.body || {};
   if (cancelNote !== undefined && typeof cancelNote !== 'string') {
     return validationError(res, ["'cancelNote' must be a string."]);
   }

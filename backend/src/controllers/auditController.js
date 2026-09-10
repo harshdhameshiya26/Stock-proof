@@ -11,6 +11,7 @@ import mongoose       from 'mongoose';
 import AuditSession   from '../models/AuditSession.js';
 import AuditLineItem  from '../models/AuditLineItem.js';
 import AuditLog       from '../models/AuditLog.js';
+import AuditStartRequest from '../models/AuditStartRequest.js';
 import Settings       from '../models/Settings.js';
 import User           from '../models/User.js';
 import { sendOtpEmail } from './userController.js';
@@ -61,6 +62,10 @@ const findSession = async (id) => {
 };
 
 const createApprovalOtp = () => randomInt(100000, 1000000).toString();
+
+const isCurrentlyLoggedIn = (user) => Boolean(
+  user?.lastLoginAt && (!user.lastLogoutAt || user.lastLoginAt > user.lastLogoutAt)
+);
 
 const verifyApprovalOtp = (session, manager, otp) => {
   if (!session) throw new AppError('Audit session not found', 404);
@@ -154,7 +159,7 @@ const resolveActor = async (req) => {
  * Fetches a live inventory snapshot from Shopify, creates the session,
  * and seeds all line items with expectedCount = current Shopify quantity.
  */
-export const setupAudit = async (req, res, next) => {
+export const setupAudit = async (req, res) => {
   try {
     const {
       shopId, locationId, staffId,
@@ -164,6 +169,16 @@ export const setupAudit = async (req, res, next) => {
     } = req.body;
 
     const actor = await resolveActor(req);
+    const assignee = await User.findOne({
+      _id: staffId,
+      shopId: req.shop?._id,
+      role: 'STAFF',
+      status: 'ACTIVE',
+      isEmailVerified: true,
+    }).select('_id').lean();
+    if (!assignee) {
+      throw new AppError('The selected auditor is not active, verified, or assigned to this store', 422);
+    }
 
     // Fetch live inventory snapshot from Shopify
     logger.info(`[Audit] Fetching stock snapshot for shop=${shopId} scope=${scopeType}`);
@@ -219,7 +234,108 @@ export const setupAudit = async (req, res, next) => {
       session:    auditSession,
     });
   } catch (err) {
+    throw err;
+  }
+};
+
+export const requestStartOtp = async (req, res, next) => {
+  try {
+    const { shopId, locationId, staffId, scopeType = 'location', collectionId, vendor, productId, name, notes, accessToken } = req.body;
+    const shopObjectId = req.shop?._id;
+    const requester = await User.findOne({ _id: req.user?._id, shopId: shopObjectId })
+      .select('name email role status isEmailVerified lastLoginAt lastLogoutAt')
+      .lean();
+    const auditor = await User.findOne({
+      _id: staffId,
+      shopId: shopObjectId,
+      role: 'STAFF',
+      status: 'ACTIVE',
+      isEmailVerified: true,
+    }).select('name email role status isEmailVerified lastLoginAt lastLogoutAt').lean();
+    const managers = await User.find({
+      shopId: shopObjectId,
+      role: { $in: ['MANAGER', 'ADMIN'] },
+      status: 'ACTIVE',
+      isEmailVerified: true,
+    }).sort({ createdAt: 1 }).select('name email role status isEmailVerified lastLoginAt lastLogoutAt').lean();
+    const manager = managers.find(isCurrentlyLoggedIn);
+
+    if (!requester || !isCurrentlyLoggedIn(requester)) {
+      throw new AppError('Please log in before starting an audit.', 401);
+    }
+    if (!auditor || !isCurrentlyLoggedIn(auditor)) {
+      throw new AppError('The selected auditor must be logged in before starting an audit.', 401);
+    }
+    if (!manager || !isCurrentlyLoggedIn(manager)) {
+      throw new AppError('A branch manager must be logged in before an audit can be started.', 401);
+    }
+
+    const otp = createApprovalOtp();
+    const startRequest = await AuditStartRequest.create({
+      shopId,
+      locationId,
+      staffId: auditor._id,
+      requesterId: requester._id,
+      managerId: manager._id,
+      auditData: { shopId, locationId, staffId, scopeType, collectionId, vendor, productId, name, notes, accessToken },
+      otp,
+      otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    });
+    const emailResult = await sendOtpEmail(manager.email, otp);
+    const response = {
+      message: `Manager approval OTP sent to ${manager.email}`,
+      challengeId: startRequest._id,
+      otpSent: !emailResult.skipped,
+      deliveryStatus: emailResult.skipped ? 'failed' : 'sent',
+      expiresAt: startRequest.otpExpiresAt,
+    };
+    if (process.env.NODE_ENV !== 'production' && emailResult.skipped) {
+      response.devOtp = otp;
+      response.smtpNote = emailResult.reason;
+    }
+    return res.status(200).json(response);
+  } catch (err) {
     next(err);
+  }
+};
+
+export const verifyStartOtp = async (req, res, next) => {
+  try {
+    const { challengeId, otp } = req.body;
+    if (!mongoose.isValidObjectId(challengeId)) {
+      throw new AppError('A valid audit start request is required. Request a new OTP.', 400);
+    }
+    const request = await AuditStartRequest.findById(challengeId).select('+otp');
+    if (!request) throw new AppError('Audit start request not found or expired. Request a new OTP.', 404);
+    if (request.requesterId.toString() !== req.user?._id?.toString()) {
+      throw new AppError('Only the user who requested the audit start can verify this OTP.', 403);
+    }
+    if (request.otpExpiresAt.getTime() < Date.now()) {
+      throw new AppError('The manager approval OTP has expired. Request a new OTP.', 401);
+    }
+    if (request.otp !== otp.trim()) throw new AppError('Invalid OTP', 400);
+
+    const manager = await User.findById(request.managerId)
+      .select('status isEmailVerified lastLoginAt lastLogoutAt').lean();
+    if (!manager || !isCurrentlyLoggedIn(manager)) {
+      throw new AppError('The branch manager must remain logged in while starting the audit.', 401);
+    }
+
+    const originalBody = req.body;
+    try {
+      req.body = request.auditData;
+      await setupAudit(req, res);
+    } finally {
+      req.body = originalBody;
+    }
+    await AuditStartRequest.findByIdAndDelete(request._id);
+  } catch (err) {
+    if (res.headersSent) return next(err);
+    const statusCode = err.statusCode || 500;
+    return res.status(statusCode).json({
+      success: false,
+      message: err.message || 'Unable to verify OTP.',
+    });
   }
 };
 
@@ -390,6 +506,64 @@ export const updateLineItem = async (req, res, next) => {
   }
 };
 
+export const updateInventoryItem = async (req, res, next) => {
+  try {
+    const { id, itemId } = req.params;
+    const { note = '' } = req.body || {};
+    const actor = await resolveActor(req);
+
+    if (!mongoose.isValidObjectId(itemId)) {
+      throw new AppError('Invalid line item ID', 400);
+    }
+
+    const session = await AuditSession.findById(id).lean();
+    if (!session) throw new AppError('Audit session not found', 404);
+    if (!['IN_PROGRESS', 'PAUSED', 'PENDING_APPROVAL'].includes(session.status)) {
+      throw new AppError('Inventory can only be updated from an active audit', 409);
+    }
+
+    const lineItem = await AuditLineItem.findOne({ _id: itemId, auditSessionId: id });
+    if (!lineItem) throw new AppError('Line item not found in this audit session', 404);
+    if (lineItem.actualCount === null || lineItem.actualCount === undefined) {
+      throw new AppError('Count this item before updating Shopify inventory', 422);
+    }
+    if (!lineItem.shopifyInventoryItemId) {
+      throw new AppError('This item has no Shopify inventory ID', 422);
+    }
+
+    const syncResult = await pushInventoryAdjustments(
+      session.shopId,
+      session.locationId,
+      [lineItem],
+      { syncVarianceOnly: false }
+    );
+    if (!syncResult.success) {
+      throw new AppError(syncResult.errors.join('; ') || 'Shopify inventory update failed', 502);
+    }
+
+    await writeLog(id, 'SHOPIFY_ITEM_UPDATED', actor, {
+      lineItemId: lineItem._id,
+      note,
+      newValue: {
+        inventoryItemId: lineItem.shopifyInventoryItemId,
+        locationId: session.locationId,
+        quantity: lineItem.actualCount,
+      },
+      shopifySyncResult: syncResult,
+    });
+
+    return res.status(200).json({
+      message: 'Shopify inventory updated successfully',
+      itemId: lineItem._id,
+      quantity: lineItem.actualCount,
+      locationId: session.locationId,
+      syncResult,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ── 5. Pause Session ─────────────────────────────────────────────────────────
 
 /**
@@ -448,7 +622,7 @@ export const resumeAudit = async (req, res, next) => {
 export const cancelAudit = async (req, res, next) => {
   try {
     const { id }       = req.params;
-    const { cancelNote } = req.body;
+    const { cancelNote } = req.body || {};
     const actor        = await resolveActor(req);
     const session      = await findSession(id);
 
@@ -461,6 +635,32 @@ export const cancelAudit = async (req, res, next) => {
     await writeLog(id, 'SESSION_CANCELLED', actor, { note: cancelNote || '' });
 
     return res.status(200).json({ message: 'Audit session cancelled', status: session.status });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ── 7b. Permanently Delete Session ──────────────────────────────────────────
+
+/**
+ * DELETE /api/audits/:id
+ * Permanently removes a session and all of its dependent records.
+ */
+export const deleteAudit = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const session = await findSession(id);
+
+    await Promise.all([
+      AuditLineItem.deleteMany({ auditSessionId: session._id }),
+      AuditLog.deleteMany({ sessionId: session._id }),
+    ]);
+    await AuditSession.deleteOne({ _id: session._id });
+
+    return res.status(200).json({
+      message: 'Audit permanently deleted',
+      id,
+    });
   } catch (err) {
     next(err);
   }

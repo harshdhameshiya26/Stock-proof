@@ -14,10 +14,11 @@ import { AppError, gidToId } from '../utils/helpers.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const API_VERSION      = process.env.SHOPIFY_API_VERSION || '2024-10';
+const API_VERSION      = process.env.SHOPIFY_API_VERSION || '2026-07';
 const MAX_RETRIES      = 3;
 const BASE_RETRY_MS    = 500;   // doubles each attempt
 const GRAPHQL_PAGE_SIZE = 50;
+const REQUEST_TIMEOUT_MS = Number(process.env.SHOPIFY_REQUEST_TIMEOUT_MS || 30_000);
 
 // ── HTTP Client ───────────────────────────────────────────────────────────────
 
@@ -38,11 +39,24 @@ const shopifyGraphQL = async (shopDomain, accessToken, query, variables = {}) =>
   };
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ query, variables }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ query, variables }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        throw new AppError('Shopify inventory request timed out. Please try again.', 504);
+      }
+      throw new AppError('Unable to connect to Shopify Admin API. Please try again.', 502);
+    } finally {
+      clearTimeout(timeout);
+    }
 
     // Rate limit — back off and retry
     if (response.status === 429) {
@@ -57,6 +71,12 @@ const shopifyGraphQL = async (shopDomain, accessToken, query, variables = {}) =>
     if (!response.ok) {
       const body = await response.text();
       logger.error(`[Shopify] HTTP ${response.status}`, { url, body });
+      if (response.status === 401) {
+        throw new AppError(
+          'Shopify access token is invalid or expired. Update SHOPIFY_ACCESS_TOKEN for local development or reinstall the app to refresh its OAuth token.',
+          401
+        );
+      }
       throw new AppError(`Shopify API error: HTTP ${response.status}`, 502);
     }
 
@@ -65,7 +85,19 @@ const shopifyGraphQL = async (shopDomain, accessToken, query, variables = {}) =>
     // GraphQL user errors
     if (json.errors) {
       logger.error('[Shopify] GraphQL errors', { errors: json.errors });
-      throw new AppError(`Shopify GraphQL error: ${json.errors[0]?.message ?? 'Unknown error'}`, 502);
+      const message = json.errors[0]?.message ?? 'Unknown error';
+      const normalizedMessage = message.toLowerCase();
+      if (
+        normalizedMessage.includes('access denied') ||
+        normalizedMessage.includes('read_products') ||
+        normalizedMessage.includes('read_inventory')
+      ) {
+        throw new AppError(
+          'Shopify denied access to products or inventory. Reinstall the app with read_products and read_inventory scopes, then try again.',
+          403
+        );
+      }
+      throw new AppError(`Shopify GraphQL error: ${message}`, 502);
     }
 
     return json.data;
@@ -106,6 +138,35 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const getShop = async (shopId) => {
   const shop = await Shop.findOne({ shopifyDomain: shopId, isActive: true }).lean();
   if (!shop) throw new AppError(`Shop not found or inactive: ${shopId}`, 404);
+
+  // Local development may use one explicitly configured Admin token. Production
+  // must continue using the shop-specific OAuth token stored in MongoDB.
+  const configuredToken = process.env.SHOPIFY_ACCESS_TOKEN?.trim();
+  if (process.env.NODE_ENV !== 'production' && configuredToken && configuredToken !== 'dev_token') {
+    shop.accessToken = configuredToken;
+    return shop;
+  }
+
+  const shouldUseDevMock =
+    process.env.NODE_ENV !== 'production' &&
+    (!shop.accessToken || shop.accessToken === 'dev_token');
+
+  if (shouldUseDevMock) return shop;
+
+  // The embedded app stores the current offline OAuth token in tbl_Session.
+  // Keep the backend Shop record in sync when an older token was saved there.
+  const session = await Shop.db.collection('tbl_Session').findOne(
+    { shop: shopId, isOnline: false, accessToken: { $exists: true, $ne: '' } },
+    { projection: { accessToken: 1 }, sort: { _id: -1 } }
+  );
+  if (session?.accessToken && session.accessToken !== shop.accessToken) {
+    shop.accessToken = session.accessToken;
+    await Shop.updateOne(
+      { _id: shop._id },
+      { $set: { accessToken: session.accessToken } }
+    );
+  }
+
   return shop;
 };
 
@@ -153,23 +214,35 @@ export const getLiveStockSnapshot = async ({
   productId,
   accessToken
 }) => {
-  const shop    = await getShop(shopId);
+  const shop = await getShop(shopId);
   if (accessToken) shop.accessToken = accessToken;
-  let products  = [];
 
-  if (scopeType === 'product' && productId) {
-    products = await fetchProductById(shop, productId);
-  } else if (scopeType === 'collection' && collectionId) {
-    products = await fetchProductsByCollection(shop, collectionId);
-  } else if (scopeType === 'vendor' && vendor) {
-    products = await fetchProductsByVendor(shop, vendor);
-  } else {
-    // 'all' or 'location' — fetch full catalog (paginated)
-    products = await fetchAllProducts(shop);
+  try {
+    let products = [];
+
+    if (scopeType === 'product' && productId) {
+      products = await fetchProductById(shop, productId);
+    } else if (scopeType === 'collection' && collectionId) {
+      products = await fetchProductsByCollection(shop, collectionId);
+    } else if (scopeType === 'vendor' && vendor) {
+      products = await fetchProductsByVendor(shop, vendor);
+    } else {
+      // 'all' or 'location' — fetch full catalog (paginated)
+      products = await fetchAllProducts(shop);
+    }
+
+    // For each variant, fetch the inventory level at the requested location
+    return buildInventorySnapshot(shop, locationId, products);
+  } catch (err) {
+    const isUnauthorized =
+      err?.statusCode === 401 ||
+      err?.message?.includes('HTTP 401') ||
+      err?.message?.includes('Unauthorized') ||
+      err?.message?.includes('invalid API key') ||
+      err?.message?.includes('unauthorized');
+
+    throw err;
   }
-
-  // For each variant, fetch the inventory level at the requested location
-  return buildInventorySnapshot(shop, locationId, products);
 };
 
 /**
@@ -182,6 +255,7 @@ const fetchProductById = async (shop, productId) => {
         id
         title
         vendor
+        status
         variants(first: 100) {
           edges {
             node { ${VARIANT_INVENTORY_FIELDS} }
@@ -191,7 +265,7 @@ const fetchProductById = async (shop, productId) => {
     }
   `;
   const data = await shopifyGraphQL(shop.shopifyDomain, shop.accessToken, query, { id: productId });
-  return data?.product ? [data.product] : [];
+  return data?.product?.status === 'ACTIVE' ? [data.product] : [];
 };
 
 /**
@@ -205,7 +279,7 @@ const fetchProductsByCollection = async (shop, collectionId) => {
           pageInfo { hasNextPage endCursor }
           edges {
             node {
-              id title vendor
+              id title vendor status
               variants(first: 100) { edges { node { ${VARIANT_INVENTORY_FIELDS} } } }
             }
           }
@@ -226,14 +300,14 @@ const fetchProductsByVendor = async (shop, vendor) => {
         pageInfo { hasNextPage endCursor }
         edges {
           node {
-            id title vendor
+            id title vendor status
             variants(first: 100) { edges { node { ${VARIANT_INVENTORY_FIELDS} } } }
           }
         }
       }
     }
   `;
-  return paginateProducts(shop, query, 'products', { query: `vendor:'${vendor}'` });
+  return paginateProducts(shop, query, 'products', { query: `vendor:'${vendor}' AND status:ACTIVE` });
 };
 
 /**
@@ -242,11 +316,11 @@ const fetchProductsByVendor = async (shop, vendor) => {
 const fetchAllProducts = async (shop) => {
   const query = `
     query AllProducts($cursor: String) {
-      products(first: ${GRAPHQL_PAGE_SIZE}, after: $cursor) {
+      products(first: ${GRAPHQL_PAGE_SIZE}, query: "status:ACTIVE", after: $cursor) {
         pageInfo { hasNextPage endCursor }
         edges {
           node {
-            id title vendor
+            id title vendor status
             variants(first: 100) { edges { node { ${VARIANT_INVENTORY_FIELDS} } } }
           }
         }
@@ -270,7 +344,9 @@ const paginateProducts = async (shop, query, dataPath, baseVariables = {}) => {
     const node      = dataPath.split('.').reduce((acc, key) => acc?.[key], data);
     if (!node) break;
 
-    node.edges.forEach(({ node: p }) => products.push(p));
+    node.edges.forEach(({ node: p }) => {
+      if (p.status === 'ACTIVE') products.push(p);
+    });
     cursor = node.pageInfo.hasNextPage ? node.pageInfo.endCursor : null;
   } while (cursor);
 
@@ -608,7 +684,7 @@ export const getProductById = async (shopId, productId) => {
  * @param {string}  shopId
  * @param {Object}  options  — { cursor, search, vendor, status, limit }
  */
-export const listProducts = async (shopId, { cursor = null, search = null, vendor = null, status = null, limit = null } = {}) => {
+export const listProducts = async (shopId, { cursor = null, search = null, vendor = null, status = 'ACTIVE', limit = null } = {}) => {
   const shop      = await getShop(shopId);
   const pageSize  = Math.min(250, Math.max(1, parseInt(limit ?? GRAPHQL_PAGE_SIZE, 10)));
 

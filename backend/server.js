@@ -129,7 +129,6 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // Surface unhandled promise rejections so they aren't silently swallowed
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled Promise Rejection', { reason: String(reason) });
-  process.exit(1);
 });
 
 export default app;
